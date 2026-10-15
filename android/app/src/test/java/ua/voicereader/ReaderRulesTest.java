@@ -59,6 +59,27 @@ public class ReaderRulesTest {
     @Test public void nightNeverRaisesReadingVolume(){
         List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Новини",List.of(),true,.1f,1f,true,.28f,3000);assertEquals(.1f,plan.get(0).volume,0f);
     }
+    @Test public void keywordsOnlyNeverIncludesOriginalMessage(){
+        String text="Тривога: сторонній текст, який не має звучати";
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan(text,List.of("тривога"),true,true,.6f,1f,false,.28f,3000);
+        assertEquals(1,plan.size());assertEquals("ТРИВОГА! ТРИВОГА! ТРИВОГА!",plan.get(0).text);assertEquals(1f,plan.get(0).volume,0f);
+    }
+    @Test public void keywordsOnlyWithoutMatchesIsSilent(){
+        assertTrue(ReaderRules.speechPlan("Звичайна новина",List.of(),true,true,.6f,1f,false,.28f,3000).isEmpty());
+        assertTrue(ReaderRules.speechPlan("Звичайна новина",List.of(),false,true,.6f,1f,false,.28f,3000).isEmpty());
+    }
+    @Test public void keywordsOnlyWithoutLoudAccentReadsPhrasesOnce(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Не читати весь цей текст",List.of("повітряна тривога","відбій"),false,true,.6f,1f,false,.28f,3000);
+        assertEquals(1,plan.size());assertEquals("повітряна тривога. відбій",plan.get(0).text);assertEquals(.6f,plan.get(0).volume,0f);
+    }
+    @Test public void quietKeywordsOnlyRespectsNightVolume(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Тривога",List.of("тривога"),false,true,.6f,1f,true,.28f,3000);assertEquals(.28f,plan.get(0).volume,0f);
+    }
+    @Test public void keywordsOnlyStillFindsSeveralUserPhrases(){
+        String text="ПОВІТРЯНА ТРИВОГА, потім відбій";
+        List<String> words=ReaderRules.matched(text,ReaderRules.lines("повітряна тривога, відбій"));assertEquals(2,words.size());
+        String spoken=ReaderRules.speechPlan(text,words,false,true,.6f,1f,false,.28f,3000).get(0).text;assertEquals("повітряна тривога. відбій",spoken);
+    }
     @Test public void chunksNeverLoseLongText(){String s="длинное сообщение ".repeat(1000)+"😀";List<String>chunks=ReaderRules.chunks(s,100);assertEquals(s,String.join("",chunks));for(String c:chunks)assertTrue(c.length()<=100);}
     @Test public void duplicateUpdatesAreBounded(){ReaderRules.Recent r=new ReaderRules.Recent(2);assertTrue(r.add("1"));assertFalse(r.add("1"));r.add("2");r.add("3");assertEquals(2,r.values().size());assertTrue(r.add("1"));}
 }

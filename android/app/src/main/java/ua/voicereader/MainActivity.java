@@ -12,7 +12,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity {
-    private EditText titles,words;private Switch night,loudKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics;
+    private EditText titles,words;private Switch night,loudKeywords,onlyKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics;
     private static final int IMPORT=4;
     private final Handler main=new Handler(Looper.getMainLooper());
     private final Runnable update=new Runnable(){public void run(){status.setText(getString(R.string.reader_status,getString(VoiceService.running?R.string.reader_running:R.string.reader_stopped),new Config(MainActivity.this).prefs.getString("status","Налаштуйте доступ до сповіщень і виберіть канали.")));updateDiagnostics();main.postDelayed(this,2000);}};
@@ -29,6 +29,8 @@ public final class MainActivity extends Activity {
         titles=input(root,"Наприклад: Назва мого каналу",4);
         button(root,"Обрати зі сповіщень Telegram",this::chooseNotificationTitle);
         label(root,"Ключові слова або фрази — через кому",16);words=input(root,"терміново, тривога, важливо",3);
+        onlyKeywords=new Switch(this);onlyKeywords.setText("Озвучувати лише ключові фрази");root.addView(onlyKeywords);
+        label(root,"У цьому режимі звучать тільки знайдені фрази зі списку. Повний текст і повідомлення без збігів не озвучуються. Гучний акцент та три повтори можна вимкнути нижче.",14);
         loudKeywords=new Switch(this);loudKeywords.setText("Гучно озвучувати ключові слова тричі");root.addView(loudKeywords);
         label(root,"Спочатку — «Увага!» та знайдені слова, потім — повідомлення. Гучність задається відносно медіагучності телефону; застосунок її не змінює. Це український голос, без автоматичного перекладу тексту.",14);
         normalVolume=volume(root,"Гучність звичайного читання",10,90);
@@ -72,8 +74,8 @@ public final class MainActivity extends Activity {
         new Config(this).prefs.edit().putBoolean("enabled",true).apply();
         try{startForegroundService(new Intent(this,VoiceService.class).setAction(test?VoiceService.TEST:"START"));}catch(Exception e){new Config(this).prefs.edit().putBoolean("enabled",false).apply();toast("Не вдалося запустити службу. Перевірте дозволи Android.");}
     }
-    private void save(){new Config(this).prefs.edit().putString("titles",titles.getText().toString().trim()).putString("words",words.getText().toString().trim()).putBoolean("loud_keywords",loudKeywords.isChecked()).putFloat("normal_volume",(10+normalVolume.getProgress())/100f).putFloat("alert_volume",(10+alertVolume.getProgress())/100f).putBoolean("night",night.isChecked()).putFloat("rate",0.75f+rate.getProgress()/100f).putFloat("pitch",0.5f+pitch.getProgress()/100f).apply();}
-    private void load(){Config c=new Config(this);titles.setText(c.prefs.getString("titles",""));words.setText(c.wordText());loudKeywords.setChecked(c.loudKeywords());normalVolume.setProgress(Math.round(c.normalVolume()*100)-10);alertVolume.setProgress(Math.round(c.alertVolume()*100)-10);night.setChecked(c.night());rate.setProgress(Math.round((c.rate()-0.75f)*100));pitch.setProgress(Math.round((c.pitch()-0.5f)*100));}
+    private void save(){new Config(this).prefs.edit().putString("titles",titles.getText().toString().trim()).putString("words",words.getText().toString().trim()).putBoolean("only_keywords",onlyKeywords.isChecked()).putBoolean("loud_keywords",loudKeywords.isChecked()).putFloat("normal_volume",(10+normalVolume.getProgress())/100f).putFloat("alert_volume",(10+alertVolume.getProgress())/100f).putBoolean("night",night.isChecked()).putFloat("rate",0.75f+rate.getProgress()/100f).putFloat("pitch",0.5f+pitch.getProgress()/100f).apply();}
+    private void load(){Config c=new Config(this);titles.setText(c.prefs.getString("titles",""));words.setText(c.wordText());onlyKeywords.setChecked(c.onlyKeywords());loudKeywords.setChecked(c.loudKeywords());normalVolume.setProgress(Math.round(c.normalVolume()*100)-10);alertVolume.setProgress(Math.round(c.alertVolume()*100)-10);night.setChecked(c.night());rate.setProgress(Math.round((c.rate()-0.75f)*100));pitch.setProgress(Math.round((c.pitch()-0.5f)*100));}
     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request==IMPORT&&result==RESULT_OK&&data!=null&&data.getData()!=null){try(InputStream input=getContentResolver().openInputStream(data.getData())){if(input==null)throw new IOException();ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] chunk=new byte[4096];int count;while((count=input.read(chunk))!=-1){out.write(chunk,0,count);if(out.size()>65536)throw new IOException();}byte[] bytes=out.toByteArray();new Config(this).importJson(new String(bytes,StandardCharsets.UTF_8));load();toast("Імпортовано. Перевірте назви каналів за сповіщеннями.");}catch(Exception e){toast("Не вдалося імпортувати. Потрібен файл налаштувань Voice Reader до 64 КБ.");}}}
     @Override protected void onResume(){super.onResume();main.post(update);}
     @Override protected void onPause(){main.removeCallbacks(update);super.onPause();}

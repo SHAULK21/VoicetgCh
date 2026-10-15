@@ -32,9 +32,10 @@ public final class ReaderRules {
     }
     public static String spoken(String text,List<String> matched) {
         if(matched.isEmpty()) return text;
-        StringBuilder out=new StringBuilder("Увага! ");
-        for(String w:matched) for(int n=0;n<3;n++) out.append(w.toUpperCase(Locale.ROOT)).append("! ");
-        return out.append("\n").append(text).toString();
+        return "Увага! "+repeatedKeywords(matched)+"\n"+text;
+    }
+    private static String repeatedKeywords(List<String> matched){
+        StringBuilder out=new StringBuilder();for(String w:matched)for(int n=0;n<3;n++)out.append(w.toUpperCase(Locale.ROOT)).append("! ");return out.toString();
     }
     public static final class Segment {
         public final String text;public final float volume;
@@ -42,9 +43,13 @@ public final class ReaderRules {
     }
     /** Alert prefix is loud; the original message always keeps its reading volume. */
     public static List<Segment> speechPlan(String text,List<String> matched,boolean loud,float normal,float alert,boolean night,float quiet,int max) {
+        return speechPlan(text,matched,loud,false,normal,alert,night,quiet,max);
+    }
+    public static List<Segment> speechPlan(String text,List<String> matched,boolean loud,boolean onlyKeywords,float normal,float alert,boolean night,float quiet,int max) {
         List<Segment> result=new ArrayList<>();
-        if(loud&&!matched.isEmpty())for(String part:chunks(spoken("",matched).trim(),max))result.add(new Segment(part,Math.max(normal,alert)));
-        for(String part:chunks(text,max))result.add(new Segment(part,night?Math.min(normal,quiet):normal));
+        if(loud&&!matched.isEmpty())for(String part:chunks((onlyKeywords?repeatedKeywords(matched):spoken("",matched)).trim(),max))result.add(new Segment(part,Math.max(normal,alert)));
+        String body=onlyKeywords?(loud?"":String.join(". ",matched)):text;
+        for(String part:chunks(body,max))result.add(new Segment(part,night?Math.min(normal,quiet):normal));
         return result;
     }
     public static List<String> chunks(String text,int max) {

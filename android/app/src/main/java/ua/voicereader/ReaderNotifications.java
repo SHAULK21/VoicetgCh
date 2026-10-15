@@ -5,16 +5,14 @@ import android.content.*;
 import android.os.*;
 import android.service.notification.*;
 import java.util.*;
-import java.security.MessageDigest;
-import java.nio.charset.StandardCharsets;
 
 public final class ReaderNotifications extends NotificationListenerService {
     private static final Set<String> PACKAGES=new HashSet<>(Arrays.asList("org.telegram.messenger","org.telegram.messenger.web","org.telegram.messenger.beta","org.thunderdog.challegram"));
     private static ReaderNotifications active;
     static boolean connected(){return active!=null;}
-    private final ReaderRules.Recent recent=new ReaderRules.Recent(200);
+    private final NotificationHistory history=new NotificationHistory(200,40,100);
     @Override public void onListenerConnected(){
-        active=this;recent.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));seedActive();
+        active=this;history.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));seedActive();
     }
     @Override public void onListenerDisconnected(){active=null;new Config(this).prefs.edit().putString("notification_status","Доступ від'єднано. Натисніть «Перепідключити сповіщення».").apply();}
     @Override public void onDestroy(){if(active==this)active=null;super.onDestroy();}
@@ -39,6 +37,7 @@ public final class ReaderNotifications extends NotificationListenerService {
         }catch(SecurityException|IllegalStateException e){new Config(this).prefs.edit().putString("notification_status","Не вдалося перевірити доступ. Перепідключіть сповіщення.").apply();}
     }
     @Override public void onNotificationPosted(StatusBarNotification sbn){if(PACKAGES.contains(sbn.getPackageName()))process(sbn,false);}
+    @Override public void onNotificationRemoved(StatusBarNotification sbn){if(PACKAGES.contains(sbn.getPackageName()))history.forget(sbn.getPackageName()+"|"+sbn.getKey());}
     private void process(StatusBarNotification sbn,boolean baseline){
         Config config=new Config(this);Notification n=sbn.getNotification();Bundle extras=n.extras;
         if(extras==null){if(!baseline)diagnostic(config, "У сповіщенні немає даних.");return;}
@@ -51,15 +50,33 @@ public final class ReaderNotifications extends NotificationListenerService {
         if(!baseline&&!ReaderRules.accepts(title,config.titles())){diagnostic(config,"Назва не збігається зі списком каналів. Додайте фактичний заголовок кнопкою нижче.");return;}
         if(!baseline&&!VoiceService.running){diagnostic(config,"Службу зупинено системою. Запустіть читання знову.");return;}
         List<Incoming> messages=messages(extras);
-        int count=0;
-        for(Incoming message:messages){String text=message.text;if(!text.trim().isEmpty()){count++;emit(sbn,title,text,message.time,config,baseline);}}
+        int count=0;Map<String,Integer> occurrences=new HashMap<>();
+        for(Incoming message:messages){String text=message.text;if(!text.trim().isEmpty()){
+            count++;String identity=NotificationHistory.fingerprint(text+"|"+message.time);int occurrence=occurrences.getOrDefault(identity,0);occurrences.put(identity,occurrence+1);
+            emit(sbn,title,text,message.time,occurrence==0?"":"occurrence:"+occurrence,config,baseline);
+        }}
         if(count==0){
-            String body=string(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
-            if(body.trim().isEmpty())body=string(extras.getCharSequence(Notification.EXTRA_TEXT));
-            if(body.trim().isEmpty()){CharSequence[] lines=extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);if(lines!=null)for(CharSequence line:lines)body+=string(line)+"\n";}
-            if(body.trim().isEmpty()){if(!baseline)diagnostic(config,"Telegram не передав текст. Увімкніть попередній перегляд сповіщень у Telegram.");return;}
-            emit(sbn,title,body,n.when>0?n.when:sbn.getPostTime(),config,baseline);
+            List<String> lines=new ArrayList<>();CharSequence[] inbox=extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+            if(inbox!=null)for(CharSequence line:inbox)if(!string(line).trim().isEmpty())lines.add(string(line));
+            if(!lines.isEmpty()){
+                String scope=sbn.getPackageName()+"|"+sbn.getKey();
+                List<Integer> fresh=history.freshIndexes(scope,lines);boolean[] handled=new boolean[lines.size()];Arrays.fill(handled,true);
+                for(int i:fresh)handled[i]=false;
+                if(!baseline&&fresh.isEmpty())diagnostic(config,"Оновлення сповіщення без нових повідомлень: повтор пропущено.");
+                for(int i:fresh){
+                    if(!emit(sbn,title,lines.get(i),sbn.getPostTime(),"inbox:"+i,config,baseline))break;
+                    handled[i]=true;
+                }
+                List<String> committed=new ArrayList<>();for(int i=0;i<lines.size();i++)if(handled[i])committed.add(lines.get(i));
+                history.remember(scope,committed,committed.size());
+            }else{
+                String body=string(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
+                if(body.trim().isEmpty())body=string(extras.getCharSequence(Notification.EXTRA_TEXT));
+                if(body.trim().isEmpty()){if(!baseline)diagnostic(config,"Telegram не передав текст. Увімкніть попередній перегляд сповіщень у Telegram.");return;}
+                emit(sbn,title,body,n.when>0?n.when:sbn.getPostTime(),"",config,baseline);
+            }
         }
+        config.prefs.edit().putStringSet("seen",history.ids()).apply();
     }
     private static final class Incoming {final String text;final long time;Incoming(String text,long time){this.text=text;this.time=time;}}
     private static List<Incoming> messages(Bundle extras){
@@ -69,19 +86,17 @@ public final class ReaderNotifications extends NotificationListenerService {
         else for(Parcelable item:bundles)if(item instanceof Bundle){Bundle message=(Bundle)item;result.add(new Incoming(string(message.getCharSequence("text")),message.getLong("time",0)));}
         return result;
     }
-    private void emit(StatusBarNotification sbn,String title,String text,long time,Config config,boolean baseline){
-        if(text.length()>16000){if(!baseline)diagnostic(config,"Текст перевищує ліміт 16000 символів.");return;}
-        String hash;
-        try{hash=hex(MessageDigest.getInstance("SHA-256").digest((sbn.getPackageName()+"|"+ReaderRules.normalizeTitle(title)+"|"+text+"|"+time).getBytes(StandardCharsets.UTF_8)));}catch(Exception e){return;}
-        if(!recent.add(hash)){if(!baseline)diagnostic(config,"Повтор уже отриманого повідомлення пропущено.");return;}
-        if(!baseline)try {
+    private boolean emit(StatusBarNotification sbn,String title,String text,long time,String discriminator,Config config,boolean baseline){
+        if(text.length()>16000){if(!baseline)diagnostic(config,"Текст перевищує ліміт 16000 символів.");return true;}
+        String hash=history.messageId(sbn.getPackageName(),title,text,time,discriminator);
+        if(!history.claim(hash)){if(!baseline)diagnostic(config,"Повтор уже отриманого повідомлення пропущено.");return true;}
+        if(baseline)return true;
+        if(config.onlyKeywords()&&ReaderRules.matched(text,config.words()).isEmpty()){diagnostic(config,"Збігів ключових фраз немає: повідомлення без звуку.");return true;}
+        try {
             startService(new Intent(this,VoiceService.class).setAction(VoiceService.SPEAK).putExtra("title",title).putExtra("text",text));
-            diagnostic(config,"Текст передано на озвучення.");
-        }catch(IllegalStateException|SecurityException e){recent.remove(hash);diagnostic(config,"Android заблокував передачу тексту службі. Відкрийте застосунок і запустіть читання знову.");}
-        // Store identities and diagnostic titles only, never notification bodies.
-        config.prefs.edit().putStringSet("seen",recent.values()).apply();
+            diagnostic(config,config.onlyKeywords()?"На озвучення передано тільки знайдені ключові фрази.":"Текст передано на озвучення.");return true;
+        }catch(IllegalStateException|SecurityException e){history.retry(hash);diagnostic(config,"Android заблокував передачу тексту службі. Відкрийте застосунок і запустіть читання знову.");return false;}
     }
     private void diagnostic(Config config,String reason){config.prefs.edit().putString("notification_status",reason).apply();}
-    private static String hex(byte[] bytes){StringBuilder b=new StringBuilder();for(byte v:bytes)b.append(String.format(Locale.ROOT,"%02x",v&255));return b.toString();}
     private static String string(CharSequence value){return value==null?"":value.toString();}
 }

@@ -15,6 +15,7 @@ final class Config {
     float nightVolume(){return prefs.getFloat("night_volume",0.28f);}
     float normalVolume(){return prefs.getFloat("normal_volume",0.60f);}
     float alertVolume(){return prefs.getFloat("alert_volume",1f);}
+    boolean onlyKeywords(){return prefs.getBoolean("only_keywords",false);}
     boolean loudKeywords(){return prefs.getBoolean("loud_keywords",true);}
     Set<String> titles(){return ReaderRules.titles(prefs.getString("titles",""));}
     String wordText(){String value=prefs.getString("words",ReaderRules.DEFAULT_WORDS);return value.equals("внимание, срочно, тревога, важно")?ReaderRules.DEFAULT_WORDS:value;}
