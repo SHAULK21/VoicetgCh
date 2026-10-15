@@ -12,7 +12,9 @@ import java.util.*;
 public final class VoiceService extends Service {
     static final String SPEAK="ua.voicereader.SPEAK",STOP="ua.voicereader.STOP",TEST="ua.voicereader.TEST",PAUSE="ua.voicereader.PAUSE";
     static volatile boolean running=false;static volatile long startedAt=0;
-    private TextToSpeech tts;private boolean ready=false,speaking=false,paused=false,destroyed=false;
+    private TextToSpeech tts;private boolean ready=false,speaking=false,destroyed=false;
+    private final ReaderRules.PlaybackGate gate=new ReaderRules.PlaybackGate();
+    private Speech currentSpeech;
     private final Handler main=new Handler(Looper.getMainLooper());
     private final ArrayDeque<Speech> queue=new ArrayDeque<>();
     private final AudioAttributes attributes=new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
@@ -21,14 +23,19 @@ public final class VoiceService extends Service {
     private static final String CHANNEL="reader_playback";
     static final class Speech {String title,text;boolean alert;Speech(String t,String s,boolean a){title=t;text=s;alert=a;}}
     @Override public void onCreate() {
-        super.onCreate();startedAt=System.currentTimeMillis();running=true;
+        super.onCreate();startedAt=System.currentTimeMillis();running=true;ReaderNotifications.seedBeforeReading();
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"Фонове читання",NotificationManager.IMPORTANCE_LOW));
         session=new MediaSession(this,"VoiceReader");
-        session.setCallback(new MediaSession.Callback(){@Override public void onPause(){pause();}@Override public void onPlay(){paused=false;drain();}@Override public void onStop(){stopSelf();}});
+        session.setCallback(new MediaSession.Callback(){@Override public void onPause(){pause();}@Override public void onPlay(){gate.resume();drain();publish();}@Override public void onStop(){stopSelf();}});
         session.setActive(true);publish();
         if(Build.VERSION.SDK_INT>=29)startForeground(1,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);else startForeground(1,notification());
         audio=getSystemService(AudioManager.class);
-        focus=new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK).setAudioAttributes(attributes).setOnAudioFocusChangeListener(change->{if(change<0){pause();new Config(this).error("Читання призупинено: інший звук або дзвінок. Натисніть ▶ для продовження.");}},main).build();
+        focus=new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK).setAudioAttributes(attributes).setAcceptsDelayedFocusGain(true).setOnAudioFocusChangeListener(change->{
+            if(change==AudioManager.AUDIOFOCUS_GAIN){if(gate.focusGained()){drain();publish();}}
+            else if(change==AudioManager.AUDIOFOCUS_LOSS_TRANSIENT||change==AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK){
+                if(!gate.paused()){gate.waitForFocus();pausePlayback(false);new Config(this).error("Тимчасова пауза через інший звук. Читання відновиться автоматично.");}
+            }else if(change==AudioManager.AUDIOFOCUS_LOSS){pause();new Config(this).error("Звук зайнятий іншою програмою. Натисніть «Запустити читання», щоб продовжити.");}
+        },main).build();
         wake=getSystemService(PowerManager.class).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"VoiceReader:Speech");wake.setReferenceCounted(false);
         tts=new TextToSpeech(this,status->main.post(()->{
             if(destroyed)return;
@@ -48,8 +55,10 @@ public final class VoiceService extends Service {
         if(intent==null){stopSelf();return START_NOT_STICKY;}
         String action=intent.getAction();
         if(STOP.equals(action)){stopSelf();return START_NOT_STICKY;}
-        if(PAUSE.equals(action)){if(paused){paused=false;drain();publish();}else pause();return START_NOT_STICKY;}
-        if(TEST.equals(action)) {
+        if(PAUSE.equals(action)){if(gate.paused()){gate.resume();drain();publish();}else pause();return START_NOT_STICKY;}
+        if("START".equals(action)){gate.resume();drain();publish();}
+        else if(TEST.equals(action)) {
+            gate.resume();
             Set<String> words=new Config(this).words();String keyword=words.isEmpty()?"":words.iterator().next();
             enqueue("Перевірка", "Перевірка українського голосу. "+(keyword.isEmpty()?"":"Ключове слово: "+keyword+". ")+"Після запуску можна вимкнути екран.");
         }
@@ -61,16 +70,21 @@ public final class VoiceService extends Service {
         Config config=new Config(this);List<String> matched=ReaderRules.matched(text,config.words());
         Speech item=new Speech(title,text,!matched.isEmpty());
         if(queue.size()>=20){queue.removeFirst();config.error("Чергу переповнено: старе сповіщення пропущено.");}
-        if(item.alert)queue.addFirst(item);else queue.addLast(item);drain();
+        if(item.alert)queue.addFirst(item);else queue.addLast(item);config.error(gate.waitingFocus()?"Очікуємо завершення іншого звуку; потім читання відновиться.":gate.paused()?"Читання на паузі. Натисніть ▶ у сповіщенні або «Запустити читання».":"Повідомлення в черзі озвучення.");drain();
     }
     private void drain() {
-        if(!ready||paused||speaking||queue.isEmpty())return;
-        if(audio.requestAudioFocus(focus)!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){new Config(this).error("Немає аудіофокуса. Натисніть ▶ після завершення іншого звуку.");paused=true;publish();return;}
+        if(!ready||gate.paused()||speaking||queue.isEmpty())return;
+        int focusResult=audio.requestAudioFocus(focus);
+        if(focusResult!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){
+            if(focusResult==AudioManager.AUDIOFOCUS_REQUEST_DELAYED){gate.waitForFocus();new Config(this).error("Очікуємо звільнення звуку. Читання почнеться автоматично.");}
+            else{gate.pause();new Config(this).error("Немає аудіофокуса. Натисніть «Запустити читання» після завершення іншого звуку.");}
+            publish();return;
+        }
         Speech item=queue.removeFirst();Config config=new Config(this);
         boolean night=config.night();
         tts.setSpeechRate(config.rate()*(night?0.88f:1));tts.setPitch(config.pitch());
         List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,ReaderRules.matched(item.text,config.words()),config.loudKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
-        speaking=true;currentTitle=item.title;currentId=UUID.randomUUID().toString();
+        currentSpeech=item;speaking=true;currentTitle=item.title;currentId=UUID.randomUUID().toString();
         wake.acquire(10*60*1000L); // bounded per announcement; never hold a permanent wake lock
         main.postDelayed(watchdog,10*60*1000L);
         for(int i=0;i<parts.size();i++) {
@@ -93,22 +107,24 @@ public final class VoiceService extends Service {
     }
     private final Runnable watchdog=()->{if(speaking){tts.stop();new Config(this).error("Озвучення перевищило ліміт часу та зупинено.");complete(currentId);}};
     private void complete(String id) {
-        if(!id.equals(currentId))return;speaking=false;currentId="";main.removeCallbacks(watchdog);
+        if(!id.equals(currentId))return;speaking=false;currentSpeech=null;currentId="";main.removeCallbacks(watchdog);
         if(wake.isHeld())wake.release();audio.abandonAudioFocusRequest(focus);publish();drain();
     }
-    private void pause() {
-        paused=true;speaking=false;currentId="";if(tts!=null)tts.stop();main.removeCallbacks(watchdog);
-        if(wake!=null&&wake.isHeld())wake.release();if(audio!=null&&focus!=null)audio.abandonAudioFocusRequest(focus);publish();
+    private void pause(){gate.pause();pausePlayback(true);}
+    private void pausePlayback(boolean abandonFocus) {
+        if(currentSpeech!=null){if(queue.size()>=20)queue.removeLast();queue.addFirst(currentSpeech);currentSpeech=null;}
+        speaking=false;currentId="";if(tts!=null)tts.stop();main.removeCallbacks(watchdog);
+        if(wake!=null&&wake.isHeld())wake.release();if(abandonFocus&&audio!=null&&focus!=null)audio.abandonAudioFocusRequest(focus);publish();
     }
     private void publish() {
-        if(session!=null)session.setPlaybackState(new PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY|PlaybackState.ACTION_PAUSE|PlaybackState.ACTION_STOP).setState(paused?PlaybackState.STATE_PAUSED:speaking?PlaybackState.STATE_PLAYING:PlaybackState.STATE_STOPPED,0,1).build());
+        if(session!=null)session.setPlaybackState(new PlaybackState.Builder().setActions(PlaybackState.ACTION_PLAY|PlaybackState.ACTION_PAUSE|PlaybackState.ACTION_STOP).setState(gate.paused()?PlaybackState.STATE_PAUSED:speaking?PlaybackState.STATE_PLAYING:PlaybackState.STATE_STOPPED,0,1).build());
         getSystemService(NotificationManager.class).notify(1,notification());
     }
     private Notification notification() {
         PendingIntent open=PendingIntent.getActivity(this,0,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,VoiceService.class).setAction(STOP),PendingIntent.FLAG_IMMUTABLE);
         PendingIntent pause=PendingIntent.getService(this,2,new Intent(this,VoiceService.class).setAction(PAUSE),PendingIntent.FLAG_IMMUTABLE);
-        Notification.Builder builder=new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Voice Reader").setContentText(paused?"Читання призупинено":speaking?currentTitle:"Читання ввімкнено • екран можна вимкнути").setContentIntent(open).setOngoing(true).setVisibility(Notification.VISIBILITY_PRIVATE).addAction(new Notification.Action.Builder(null,paused?"Продовжити":"Пауза",pause).build()).addAction(new Notification.Action.Builder(null,"Зупинити",stop).build());
+        Notification.Builder builder=new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Voice Reader").setContentText(gate.paused()?"Читання призупинено":speaking?currentTitle:"Читання ввімкнено • екран можна вимкнути").setContentIntent(open).setOngoing(true).setVisibility(Notification.VISIBILITY_PRIVATE).addAction(new Notification.Action.Builder(null,gate.paused()?"Продовжити":"Пауза",pause).build()).addAction(new Notification.Action.Builder(null,"Зупинити",stop).build());
         if(session!=null)builder.setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()).setShowActionsInCompactView(0,1));return builder.build();
     }
     @Override public void onDestroy(){destroyed=true;running=false;new Config(this).prefs.edit().putBoolean("enabled",false).apply();main.removeCallbacksAndMessages(null);if(tts!=null){tts.stop();tts.shutdown();}if(wake!=null&&wake.isHeld())wake.release();if(audio!=null&&focus!=null)audio.abandonAudioFocusRequest(focus);if(session!=null){session.setActive(false);session.release();}stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
