@@ -4,6 +4,7 @@ import java.util.*;
 
 /** Pure rules shared by notification parsing and speech queue; JVM-testable. */
 public final class ReaderRules {
+    public static final String DEFAULT_WORDS="увага, терміново, тривога, важливо";
     private ReaderRules() {}
     public static Set<String> lines(String text) {
         Set<String> result=new LinkedHashSet<>();
@@ -23,9 +24,20 @@ public final class ReaderRules {
     }
     public static String spoken(String text,List<String> matched) {
         if(matched.isEmpty()) return text;
-        StringBuilder out=new StringBuilder("Внимание! ");
+        StringBuilder out=new StringBuilder("Увага! ");
         for(String w:matched) for(int n=0;n<3;n++) out.append(w.toUpperCase(Locale.ROOT)).append("! ");
         return out.append("\n").append(text).toString();
+    }
+    public static final class Segment {
+        public final String text;public final float volume;
+        Segment(String text,float volume){this.text=text;this.volume=volume;}
+    }
+    /** Alert prefix is loud; the original message always keeps its reading volume. */
+    public static List<Segment> speechPlan(String text,List<String> matched,boolean loud,float normal,float alert,boolean night,float quiet,int max) {
+        List<Segment> result=new ArrayList<>();
+        if(loud&&!matched.isEmpty())for(String part:chunks(spoken("",matched).trim(),max))result.add(new Segment(part,Math.max(normal,alert)));
+        for(String part:chunks(text,max))result.add(new Segment(part,night?Math.min(normal,quiet):normal));
+        return result;
     }
     public static List<String> chunks(String text,int max) {
         List<String> result=new ArrayList<>();int start=0;

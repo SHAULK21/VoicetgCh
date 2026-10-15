@@ -11,8 +11,8 @@ import java.nio.charset.StandardCharsets;
 public final class ReaderNotifications extends NotificationListenerService {
     private static final Set<String> PACKAGES=new HashSet<>(Arrays.asList("org.telegram.messenger","org.telegram.messenger.web","org.telegram.messenger.beta","org.thunderdog.challegram"));
     private final ReaderRules.Recent recent=new ReaderRules.Recent(200);
-    @Override public void onListenerConnected(){recent.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));new Config(this).error("Доступ к уведомлениям подключён");}
-    @Override public void onListenerDisconnected(){new Config(this).error("Доступ к уведомлениям прерван. Откройте приложение и проверьте разрешение.");}
+    @Override public void onListenerConnected(){recent.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));new Config(this).error("Доступ до сповіщень підключено");}
+    @Override public void onListenerDisconnected(){new Config(this).error("Доступ до сповіщень перервано. Відкрийте застосунок і перевірте дозвіл.");}
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
         Config config=new Config(this);
         if(!config.enabled()||!PACKAGES.contains(sbn.getPackageName()))return;
@@ -21,7 +21,7 @@ public final class ReaderNotifications extends NotificationListenerService {
         String title=string(n.extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE));
         if(title.trim().isEmpty())title=string(n.extras.getCharSequence(Notification.EXTRA_TITLE));
         if(!ReaderRules.accepts(title,config.titles()))return;
-        if(!VoiceService.running){config.error("Чтение остановлено системой. Нажмите «Запустить чтение».");return;}
+        if(!VoiceService.running){config.error("Читання зупинено системою. Натисніть «Запустити читання».");return;}
         Parcelable[] messages=n.extras.getParcelableArray(Notification.EXTRA_MESSAGES);
         if(messages!=null&&messages.length>0) {
             // Telegram may re-publish the whole conversation. Read only new items;

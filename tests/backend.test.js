@@ -80,7 +80,7 @@ test('failed public check does not advance cursor and exposes source error',asyn
   const result=await service.call('checkChannels',{},u);assert.match(result.trackedChannels[0].error,/502/);assert.equal((await store.get('SELECT cursor FROM channels')).cursor,0);
 });
 test('addressed bot commands work; commands for another bot are ignored',async t=>{
-  const {service,db}=setup();t.after(()=>db.close());assert.ok((await service.command(1,'/list@ExampleBot')).includes('срочно'));assert.equal(await service.command(1,'/clear@OtherBot'),'');assert.ok((await service.command(1,'/list')).includes('срочно'));
+  const {service,db}=setup();t.after(()=>db.close());assert.ok((await service.command(1,'/list@ExampleBot')).includes('терміново'));assert.equal(await service.command(1,'/clear@OtherBot'),'');assert.ok((await service.command(1,'/list')).includes('терміново'));
 });
 test('long Gemini input reaches provider completely as chunks, not 800-character truncation',async t=>{
   const received=[];const {service,db}=setup({fetcher:async(_url,request)=>{received.push(JSON.parse(request.body).contents[0].parts[0].text);return{ok:true,json:async()=>({candidates:[{content:{parts:[{inlineData:{data:'UklGRg==',mimeType:'audio/wav'}}]}}]})};}});t.after(()=>db.close());await service.call('configureTts',{key:'FAKE_GEMINI_KEY_FOR_REGRESSION'},u);

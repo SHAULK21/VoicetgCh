@@ -71,7 +71,7 @@ export class AudioEngine {
     }
     for(const text of splitSpeech(message.spokenText,1200)) {
       if(generation!==this.generation)return;
-      await this.browserSpeech(text,entry);
+      await this.browserSpeech(text,entry,generation);
     }
   }
   private async playBytes(chunk:{audioBase64:string;mimeType:string},entry:Entry,generation:number) {
@@ -91,14 +91,29 @@ export class AudioEngine {
       this.resolveCurrent=finish;source.onended=finish;source.start();
     });
   }
-  private browserSpeech(text:string,{message,settings}:Entry) {
+  private async ukrainianVoice() {
+    const find=()=>speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith('uk'));
+    let voices=find();
+    if(!voices.length&&speechSynthesis.addEventListener) {
+      await new Promise<void>(resolve=>{
+        const done=()=>{clearTimeout(timer);speechSynthesis.removeEventListener('voiceschanged',changed);resolve();};
+        const changed=()=>{if(find().length)done();};
+        const timer=setTimeout(done,1500);speechSynthesis.addEventListener('voiceschanged',changed);changed();
+      });
+      voices=find();
+    }
+    return voices.find(v=>/google|natural|online|neural/i.test(v.name))??voices[0];
+  }
+  private async browserSpeech(text:string,{message,settings}:Entry,generation:number) {
     if(!('speechSynthesis' in window))throw new Error('Системный голос недоступен на этом устройстве. Выберите Gemini.');
+    const voice=await this.ukrainianVoice();
+    if(generation!==this.generation)return;
+    if(!voice)throw new Error('Установите украинский голос в настройках синтеза речи устройства.');
     return new Promise<void>((resolve,reject)=>{
       const utterance=new SpeechSynthesisUtterance(text);
-      const lang=/[іїєґ]/i.test(text)?'uk-UA':/[а-яё]/i.test(text)?'ru-RU':'en-US';
+      const lang='uk-UA';
       utterance.lang=lang;
-      const voices=speechSynthesis.getVoices().filter(v=>v.lang.toLowerCase().startsWith(lang.slice(0,2)));
-      const voice=voices.find(v=>/google|natural|online|neural/i.test(v.name))??voices[0];if(voice)utterance.voice=voice;
+      utterance.voice=voice;
       utterance.rate=settings.speechRate*(message.isNightMode?0.88:message.hasAlert?1.08:1);
       utterance.pitch=1+settings.pitch/10;
       utterance.volume=message.isNightMode?settings.nightVolume:1;
