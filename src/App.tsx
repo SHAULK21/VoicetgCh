@@ -68,7 +68,7 @@ export default function App() {
     await unlock();const selected={...settingsRef.current,...(voice?{voiceName:voice}: {})};
     audioEngine.enqueueMessage({id:`preview-${Date.now()}`,channelTitle:'Тест',channelUsername:'@test',text,spokenText:text,date:Date.now(),timestamp:'',hasAlert:alert,matchedWords:[],isNightMode:selected.nightMode&&!alert},selected);
   }
-  function simulate(type:'alert'|'normal') {void change(async()=>{const text=type==='alert'?'СРОЧНО! ВНИМАНИЕ! Проверка тревожного сообщения.':'Обычная новость: проверка спокойного чтения.';consume(await call('simulatePost',{text,requestId:crypto.randomUUID(),after:cursor.current}),true);}).catch(()=>{});}
+  function simulate(type:'alert'|'normal') {void change(async()=>{const text=type==='alert'?'ТЕРМІНОВО! УВАГА! Перевірка тривожного повідомлення.':'Звичайна новина: перевірка спокійного читання.';consume(await call('simulatePost',{text,requestId:crypto.randomUUID(),after:cursor.current}),true);}).catch(()=>{});}
   function downloadConfig() {
     const config={version:1,filterWords:words,voiceSettings:settings,channels:channels.filter(c=>c.isActive).map(c=>({username:c.username,title:c.title})),notificationTitles:channels.filter(c=>c.isActive).map(c=>c.title)};
     const url=URL.createObjectURL(new Blob([JSON.stringify(config,null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='voice-reader-settings.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),10000);

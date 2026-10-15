@@ -6,7 +6,33 @@ public class ReaderRulesTest {
     @Test public void emptyAllowlistNeverReadsPrivateChat(){assertFalse(ReaderRules.accepts("Private",Set.of()));}
     @Test public void matchIsExactAndCaseInsensitive(){Set<String>s=ReaderRules.lines("Мой канал\nNews");assertTrue(ReaderRules.accepts("МОЙ КАНАЛ",s));assertFalse(ReaderRules.accepts("Мой канал — личный чат",s));}
     @Test public void channelTitleWithCommaIsNotSplit(){assertTrue(ReaderRules.accepts("News, today",ReaderRules.titles("News, today\nOther")));assertFalse(ReaderRules.accepts("News",ReaderRules.titles("News, today")));}
-    @Test public void alertsRepeatThreeTimes(){List<String>m=ReaderRules.matched("СрОчНо новость",Set.of("срочно"));assertEquals("Внимание! СРОЧНО! СРОЧНО! СРОЧНО! \nСрОчНо новость",ReaderRules.spoken("СрОчНо новость",m));}
+    @Test public void alertsRepeatThreeTimes(){List<String>m=ReaderRules.matched("СрОчНо новость",Set.of("срочно"));assertEquals("Увага! СРОЧНО! СРОЧНО! СРОЧНО! \nСрОчНо новость",ReaderRules.spoken("СрОчНо новость",m));}
+    @Test public void ukrainianAlertsAreLoudButBodyKeepsNormalVolume(){
+        String text="ТЕРМІНОВО: важливо прочитати";
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan(text,ReaderRules.matched(text,ReaderRules.lines("терміново, важливо")),true,.6f,1f,false,.28f,3000);
+        assertEquals(2,plan.size());assertEquals("Увага! ТЕРМІНОВО! ТЕРМІНОВО! ТЕРМІНОВО! ВАЖЛИВО! ВАЖЛИВО! ВАЖЛИВО!",plan.get(0).text);
+        assertEquals(1f,plan.get(0).volume,0f);assertEquals(.6f,plan.get(1).volume,0f);assertEquals(text,plan.get(1).text);
+    }
+    @Test public void nightDoesNotQuietKeywordAnnouncement(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Тривога",List.of("тривога"),true,.6f,1f,true,.28f,3000);
+        assertEquals(1f,plan.get(0).volume,0f);assertEquals(.28f,plan.get(1).volume,0f);
+    }
+    @Test public void disabledAlertsReadOriginalOnly(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Тривога",List.of("тривога"),false,.6f,1f,false,.28f,3000);
+        assertEquals(1,plan.size());assertEquals("Тривога",plan.get(0).text);assertEquals(.6f,plan.get(0).volume,0f);
+    }
+    @Test public void splitAlertKeepsLoudVolumeAndOriginalBody(){
+        String text="Новини ".repeat(100)+"😀";
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan(text,List.of("дуже важливе повідомлення"),true,.6f,1f,false,.28f,25);
+        StringBuilder body=new StringBuilder();for(ReaderRules.Segment part:plan){assertTrue(part.text.length()<=25);if(part.volume==.6f)body.append(part.text);}
+        assertEquals(text,body.toString());assertTrue(plan.get(0).volume>.6f);
+    }
+    @Test public void noMatchAddsNoAnnouncement(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Новини",List.of(),true,.6f,1f,false,.28f,3000);assertEquals(1,plan.size());assertEquals("Новини",plan.get(0).text);
+    }
+    @Test public void nightNeverRaisesReadingVolume(){
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan("Новини",List.of(),true,.1f,1f,true,.28f,3000);assertEquals(.1f,plan.get(0).volume,0f);
+    }
     @Test public void chunksNeverLoseLongText(){String s="длинное сообщение ".repeat(1000)+"😀";List<String>chunks=ReaderRules.chunks(s,100);assertEquals(s,String.join("",chunks));for(String c:chunks)assertTrue(c.length()<=100);}
     @Test public void duplicateUpdatesAreBounded(){ReaderRules.Recent r=new ReaderRules.Recent(2);assertTrue(r.add("1"));assertFalse(r.add("1"));r.add("2");r.add("3");assertEquals(2,r.values().size());assertTrue(r.add("1"));}
 }

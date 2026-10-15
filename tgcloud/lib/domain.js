@@ -1,4 +1,4 @@
-export const DEFAULT_WORDS = ['внимание', 'срочно', 'тревога', 'важно'];
+export const DEFAULT_WORDS = ['увага', 'терміново', 'тривога', 'важливо'];
 export const VOICES = ['Puck', 'Charon', 'Kore', 'Fenrir', 'Zephyr'];
 export const DEFAULT_SETTINGS = {
   voiceName: 'Kore', speechRate: 1, pitch: 0, alertVolumeBoost: 2.2,
@@ -49,7 +49,7 @@ export function formatSpokenText(text, words, isNight = false) {
   const lower = text.toLowerCase();
   const matchedWords = [...new Set(words.map(w => w.trim().toLowerCase()).filter(w => w && lower.includes(w)))];
   const prefix = matchedWords.map(w => `${w.toUpperCase()}! ${w.toUpperCase()}! ${w.toUpperCase()}!`).join(' ');
-  return { hasAlert: !!prefix, matchedWords, spokenText: prefix ? `ВНИМАНИЕ! ${prefix}\n\n${text}` : text, isNightMode: isNight && !prefix };
+  return { hasAlert: !!prefix, matchedWords, spokenText: prefix ? `УВАГА! ${prefix}\n\n${text}` : text, isNightMode: isNight && !prefix };
 }
 export function splitText(text, max = 1200) {
   const result = [];

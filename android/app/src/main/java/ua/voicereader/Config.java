@@ -13,12 +13,16 @@ final class Config {
     float rate(){return prefs.getFloat("rate",1f);}
     float pitch(){return prefs.getFloat("pitch",1f);}
     float nightVolume(){return prefs.getFloat("night_volume",0.28f);}
+    float normalVolume(){return prefs.getFloat("normal_volume",0.60f);}
+    float alertVolume(){return prefs.getFloat("alert_volume",1f);}
+    boolean loudKeywords(){return prefs.getBoolean("loud_keywords",true);}
     Set<String> titles(){return ReaderRules.titles(prefs.getString("titles",""));}
-    Set<String> words(){return ReaderRules.lines(prefs.getString("words","внимание, срочно, тревога, важно"));}
+    String wordText(){String value=prefs.getString("words",ReaderRules.DEFAULT_WORDS);return value.equals("внимание, срочно, тревога, важно")?ReaderRules.DEFAULT_WORDS:value;}
+    Set<String> words(){return ReaderRules.lines(wordText());}
     void error(String error){prefs.edit().putString("status",error).apply();}
     void importJson(String raw)throws JSONException {
         JSONObject root=new JSONObject(raw);
-        if(root.optInt("version")!=1)throw new JSONException("Неизвестный формат настроек");
+        if(root.optInt("version")!=1)throw new JSONException("Невідомий формат налаштувань");
         JSONArray words=root.optJSONArray("filterWords"),titles=root.optJSONArray("notificationTitles");
         List<String> wordList=new ArrayList<>(),titleList=new ArrayList<>();
         if(words!=null)for(int i=0;i<Math.min(words.length(),40);i++)wordList.add(words.getString(i));
