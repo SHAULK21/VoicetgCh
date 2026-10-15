@@ -68,22 +68,23 @@ public final class VoiceService extends Service {
     private void enqueue(String title,String text) {
         if(text==null||text.trim().isEmpty())return;
         Config config=new Config(this);List<String> matched=ReaderRules.matched(text,config.words());
+        if(config.onlyKeywords()&&matched.isEmpty()){config.error("Збігів ключових фраз немає: повідомлення без звуку.");return;}
         Speech item=new Speech(title,text,!matched.isEmpty());
         if(queue.size()>=20){queue.removeFirst();config.error("Чергу переповнено: старе сповіщення пропущено.");}
         if(item.alert)queue.addFirst(item);else queue.addLast(item);config.error(gate.waitingFocus()?"Очікуємо завершення іншого звуку; потім читання відновиться.":gate.paused()?"Читання на паузі. Натисніть ▶ у сповіщенні або «Запустити читання».":"Повідомлення в черзі озвучення.");drain();
     }
     private void drain() {
         if(!ready||gate.paused()||speaking||queue.isEmpty())return;
+        Speech item=queue.peekFirst();Config config=new Config(this);boolean night=config.night();
+        List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,ReaderRules.matched(item.text,config.words()),config.loudKeywords(),config.onlyKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
+        if(parts.isEmpty()){queue.removeFirst();config.error("Збігів ключових фраз немає: повідомлення без звуку.");main.post(this::drain);return;}
         int focusResult=audio.requestAudioFocus(focus);
         if(focusResult!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){
-            if(focusResult==AudioManager.AUDIOFOCUS_REQUEST_DELAYED){gate.waitForFocus();new Config(this).error("Очікуємо звільнення звуку. Читання почнеться автоматично.");}
-            else{gate.pause();new Config(this).error("Немає аудіофокуса. Натисніть «Запустити читання» після завершення іншого звуку.");}
+            if(focusResult==AudioManager.AUDIOFOCUS_REQUEST_DELAYED){gate.waitForFocus();config.error("Очікуємо звільнення звуку. Читання почнеться автоматично.");}
+            else{gate.pause();config.error("Немає аудіофокуса. Натисніть «Запустити читання» після завершення іншого звуку.");}
             publish();return;
         }
-        Speech item=queue.removeFirst();Config config=new Config(this);
-        boolean night=config.night();
-        tts.setSpeechRate(config.rate()*(night?0.88f:1));tts.setPitch(config.pitch());
-        List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,ReaderRules.matched(item.text,config.words()),config.loudKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
+        queue.removeFirst();tts.setSpeechRate(config.rate()*(night?0.88f:1));tts.setPitch(config.pitch());
         currentSpeech=item;speaking=true;currentTitle=item.title;currentId=UUID.randomUUID().toString();
         wake.acquire(10*60*1000L); // bounded per announcement; never hold a permanent wake lock
         main.postDelayed(watchdog,10*60*1000L);
