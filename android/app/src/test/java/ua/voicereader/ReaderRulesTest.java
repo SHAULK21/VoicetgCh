@@ -6,6 +6,32 @@ public class ReaderRulesTest {
     @Test public void emptyAllowlistNeverReadsPrivateChat(){assertFalse(ReaderRules.accepts("Private",Set.of()));}
     @Test public void matchIsExactAndCaseInsensitive(){Set<String>s=ReaderRules.lines("Мой канал\nNews");assertTrue(ReaderRules.accepts("МОЙ КАНАЛ",s));assertFalse(ReaderRules.accepts("Мой канал — личный чат",s));}
     @Test public void channelTitleWithCommaIsNotSplit(){assertTrue(ReaderRules.accepts("News, today",ReaderRules.titles("News, today\nOther")));assertFalse(ReaderRules.accepts("News",ReaderRules.titles("News, today")));}
+    @Test public void notificationTitleIgnoresInvisibleDirectionMarkersAndUnicodeSpaces(){
+        assertTrue(ReaderRules.accepts("\u200fКиїв\u00a0  Новини\u200e",ReaderRules.titles("Київ Новини")));
+        assertFalse(ReaderRules.accepts("Київ Новини приватний чат",ReaderRules.titles("Київ Новини")));
+    }
+    @Test public void telegramRawTitleCanMatchWhenConversationTitleDiffers(){
+        Set<String> allowed=ReaderRules.titles("Київ Новини");
+        assertEquals("Київ Новини",ReaderRules.selectTitle("Інший заголовок","Київ Новини",allowed));
+        assertEquals("Київ Новини",ReaderRules.selectTitle("Київ Новини","Автор",allowed));
+    }
+    @Test public void noConversationTitleFallsBackToNotificationTitle(){
+        assertEquals("Новини",ReaderRules.selectTitle("\u200e", "Новини",Set.of()));
+        assertFalse(ReaderRules.accepts(ReaderRules.selectTitle("Чужий канал","Інший чат",ReaderRules.titles("Мій канал")),ReaderRules.titles("Мій канал")));
+    }
+    @Test public void failedDeliveryCanBeRetriedWithoutDuplicateSuppression(){
+        ReaderRules.Recent recent=new ReaderRules.Recent(200);assertTrue(recent.add("delivery"));recent.remove("delivery");assertTrue(recent.add("delivery"));assertFalse(recent.add("delivery"));
+    }
+    @Test public void temporaryAudioInterruptionResumesOnFocusGain(){
+        ReaderRules.PlaybackGate gate=new ReaderRules.PlaybackGate();gate.waitForFocus();assertTrue(gate.paused());assertTrue(gate.focusGained());assertFalse(gate.paused());
+    }
+    @Test public void focusGainDoesNotOverrideUserPause(){
+        ReaderRules.PlaybackGate gate=new ReaderRules.PlaybackGate();gate.pause();assertFalse(gate.focusGained());assertTrue(gate.paused());
+        gate.resume();assertFalse(gate.paused());
+    }
+    @Test public void userPauseDuringTemporaryInterruptionCancelsAutomaticResume(){
+        ReaderRules.PlaybackGate gate=new ReaderRules.PlaybackGate();gate.waitForFocus();gate.pause();assertFalse(gate.focusGained());assertTrue(gate.paused());
+    }
     @Test public void alertsRepeatThreeTimes(){List<String>m=ReaderRules.matched("СрОчНо новость",Set.of("срочно"));assertEquals("Увага! СРОЧНО! СРОЧНО! СРОЧНО! \nСрОчНо новость",ReaderRules.spoken("СрОчНо новость",m));}
     @Test public void ukrainianAlertsAreLoudButBodyKeepsNormalVolume(){
         String text="ТЕРМІНОВО: важливо прочитати";

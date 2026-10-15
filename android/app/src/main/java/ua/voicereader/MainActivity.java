@@ -12,20 +12,22 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity {
-    private EditText titles,words;private Switch night,loudKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status;
+    private EditText titles,words;private Switch night,loudKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics;
     private static final int IMPORT=4;
     private final Handler main=new Handler(Looper.getMainLooper());
-    private final Runnable update=new Runnable(){public void run(){status.setText(getString(R.string.reader_status,getString(VoiceService.running?R.string.reader_running:R.string.reader_stopped),new Config(MainActivity.this).prefs.getString("status","Налаштуйте доступ до сповіщень і виберіть канали.")));main.postDelayed(this,2000);}};
+    private final Runnable update=new Runnable(){public void run(){status.setText(getString(R.string.reader_status,getString(VoiceService.running?R.string.reader_running:R.string.reader_stopped),new Config(MainActivity.this).prefs.getString("status","Налаштуйте доступ до сповіщень і виберіть канали.")));updateDiagnostics();main.postDelayed(this,2000);}};
     @Override public void onCreate(Bundle saved){super.onCreate(saved);build();}
     private void build() {
         ScrollView scroll=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);int pad=(int)(20*getResources().getDisplayMetrics().density);root.setPadding(pad,pad,pad,pad);scroll.addView(root);setContentView(scroll);
         if(Build.VERSION.SDK_INT>=35)root.setOnApplyWindowInsetsListener((view,insets)->{android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars());view.setPadding(pad,pad+bars.top,pad,pad+bars.bottom);return insets;});
         label(root,"Voice Reader",26);label(root,"Читання вибраних сповіщень Telegram українською з вимкненим екраном",16);
-        status=label(root,"",14);
+        status=label(root,"",14);diagnostics=label(root,"",14);
+        button(root,"Перепідключити сповіщення",()->{if(!listenerAllowed()){startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));return;}if(ReaderNotifications.connected()){toast("Доступ уже підключено. Перевірте заголовок каналу нижче.");return;}ReaderNotifications.reconnect(this);toast("Запит підключення надіслано. Зачекайте кілька секунд.");});
         label(root,"1. У Telegram увімкніть сповіщення потрібних каналів та попередній перегляд тексту. Застосунок читає доступний текст сповіщень; прихований або обрізаний текст отримати не зможе.",14);
         button(root,"Дозволити доступ до сповіщень",()->startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
         label(root,"2. Точні назви каналів — кожна з нового рядка. Використовуйте заголовки сповіщень, а не посилання. Порожній список означає: нічого не читати. Не додавайте назви особистих чатів.",14);
         titles=input(root,"Наприклад: Назва мого каналу",4);
+        button(root,"Обрати зі сповіщень Telegram",this::chooseNotificationTitle);
         label(root,"Ключові слова або фрази — через кому",16);words=input(root,"терміново, тривога, важливо",3);
         loudKeywords=new Switch(this);loudKeywords.setText("Гучно озвучувати ключові слова тричі");root.addView(loudKeywords);
         label(root,"Спочатку — «Увага!» та знайдені слова, потім — повідомлення. Гучність задається відносно медіагучності телефону; застосунок її не змінює. Це український голос, без автоматичного перекладу тексту.",14);
@@ -43,14 +45,30 @@ public final class MainActivity extends Activity {
         button(root,"Налаштування синтезу мовлення",()->{try{startActivity(new Intent("com.android.settings.TTS_SETTINGS"));}catch(Exception e){startActivity(new Intent(Settings.ACTION_SETTINGS));}});
         button(root,"Налаштування батареї застосунку",()->startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName()))));
         label(root,"На Poco/Xiaomi дозвольте роботу у фоні та виберіть батарею «Без обмежень». Не вимикайте службу в системному диспетчері. Після перезавантаження запустіть читання знову. Медіагучність і налаштування TTS впливають на чутність.",14);
-        label(root,"Приватність: застосунок приймає сповіщення офіційного Telegram/Telegram X і читає лише точні збіги зі списку. Доступу до інтернету немає. Текст не зберігається; використовуються лише хеші проти повторів. Системний синтезатор мовлення може використовувати онлайн-голос.",13);
+        label(root,"Приватність: застосунок приймає сповіщення офіційного Telegram/Telegram X і читає лише точні збіги зі списку. Доступу до інтернету немає. Текст повідомлень не зберігається; локально зберігаються хеші проти повторів та останній заголовок для діагностики. Системний синтезатор мовлення може використовувати онлайн-голос.",13);
         load();
+    }
+    private void updateDiagnostics(){
+        Config c=new Config(this);long at=c.prefs.getLong("last_notification_at",0);
+        String when=at==0?"ще не отримано":android.text.format.DateFormat.getTimeFormat(this).format(new java.util.Date(at));
+        diagnostics.setText(getString(R.string.notification_diagnostics,listenerAllowed()?"дозволено":"не дозволено",ReaderNotifications.connected()?"підключено":"немає з'єднання",when,c.prefs.getString("last_title","—"),c.prefs.getString("notification_status","Очікуємо нове сповіщення Telegram.")));
+    }
+    private void chooseNotificationTitle(){
+        java.util.List<String> detected=ReaderNotifications.activeTitles();Config c=new Config(this);
+        for(String key:new String[]{"last_title","last_raw_title"}){String title=c.prefs.getString(key,"");if(!title.trim().isEmpty()&&!detected.contains(title))detected.add(title);}
+        if(detected.isEmpty()){toast("Заголовків ще немає. Дозвольте доступ до сповіщень, дочекайтеся нового повідомлення Telegram та спробуйте ще раз.");return;}
+        new AlertDialog.Builder(this).setTitle("Оберіть канал. Особисті чати не додавайте.").setItems(detected.toArray(new String[0]),(dialog,index)->{
+            String chosen=ReaderRules.normalizeTitle(detected.get(index));java.util.Set<String> allowed=ReaderRules.titles(titles.getText().toString());
+            if(!allowed.contains(chosen)){String previous=titles.getText().toString().trim();titles.setText(previous.isEmpty()?chosen:previous+"\n"+chosen);}
+            save();toast("Заголовок додано. Натисніть «Запустити читання» і перевірте НОВЕ повідомлення.");
+        }).setNegativeButton("Скасувати",null).show();
     }
     private boolean listenerAllowed(){String flat=Settings.Secure.getString(getContentResolver(),"enabled_notification_listeners");if(flat==null)return false;for(String item:flat.split(":")){ComponentName component=ComponentName.unflattenFromString(item);if(component!=null&&component.getPackageName().equals(getPackageName()))return true;}return false;}
     private void start(boolean test) {
         save();if(!test&&!listenerAllowed()){toast("Спочатку дозвольте доступ до сповіщень");return;}
         if(!test&&new Config(this).titles().isEmpty()){toast("Додайте точні назви каналів");return;}
         if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},7);toast("Дозвольте сповіщення та натисніть запуск ще раз");return;}
+        if(listenerAllowed()&&!ReaderNotifications.connected())ReaderNotifications.reconnect(this);
         new Config(this).prefs.edit().putBoolean("enabled",true).apply();
         try{startForegroundService(new Intent(this,VoiceService.class).setAction(test?VoiceService.TEST:"START"));}catch(Exception e){new Config(this).prefs.edit().putBoolean("enabled",false).apply();toast("Не вдалося запустити службу. Перевірте дозволи Android.");}
     }

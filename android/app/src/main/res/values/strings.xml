@@ -1,4 +1,5 @@
 <resources>
+    <string name="notification_diagnostics">Доступ до сповіщень: %1$s\nЗ’єднання: %2$s\nОстаннє Telegram: %3$s\nЗаголовок: %4$s\n%5$s</string>
     <string name="volume_percent">%1$s: %2$d%%</string>
     <string name="reader_status">%1$s\n%2$s</string>
     <string name="reader_running">● Служба працює</string>
