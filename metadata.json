@@ -1,0 +1,6 @@
+{
+  "name": "Telegram Voice Reader & Filter Bot",
+  "description": "Telegram bot for instant voice broadcast of channel posts with high-quality AI speech synthesis, voice customization, filter alert words shouting, and bot command management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
