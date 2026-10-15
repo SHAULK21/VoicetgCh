@@ -17,12 +17,12 @@ export const ChannelFeed: React.FC<ChannelFeedProps> = ({
 }) => {
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-4 text-slate-200">
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex flex-wrap items-center gap-2">
           <MessageSquare className="w-5 h-5 text-sky-400" />
           <h2 className="font-semibold text-white text-base">Лента Постов из Телеграм Канала</h2>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() => onSimulateQuick('normal')}
@@ -82,14 +82,14 @@ export const ChannelFeed: React.FC<ChannelFeedProps> = ({
                 }`}
               >
                 {/* Header: Channel info and timestamp */}
-                <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap gap-2 items-center justify-between text-xs text-slate-400 mb-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold text-white">{msg.channelTitle}</span>
                     <span aria-hidden="true">·</span>
                     <span className="text-sky-400 font-mono">{msg.channelUsername}</span>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[11px] text-slate-400">{msg.timestamp}</span>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[11px] text-slate-400">{new Date(msg.date).toLocaleTimeString('ru-RU', {hour:'2-digit',minute:'2-digit'})}</span>
                     {isPlayingThis && (
                       <span className="flex items-center gap-1 text-[11px] font-semibold text-sky-400 animate-pulse">
                         <Volume2 className="w-3.5 h-3.5" /> В эфире
@@ -115,7 +115,7 @@ export const ChannelFeed: React.FC<ChannelFeedProps> = ({
                 )}
 
                 {/* Message Body */}
-                <div className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                <div className="text-sm text-slate-200 whitespace-pre-wrap break-words leading-relaxed">
                   {highlightMatchedWords(msg.text, msg.matchedWords)}
                 </div>
 
@@ -130,7 +130,7 @@ export const ChannelFeed: React.FC<ChannelFeedProps> = ({
                 )}
 
                 {/* Action buttons */}
-                <div className="mt-3 flex items-center justify-between pt-2 border-t border-slate-800/60">
+                <div className="mt-3 flex flex-wrap gap-2 items-center justify-between pt-2 border-t border-slate-800/60">
                   <span className="text-[11px] text-slate-500 flex items-center gap-1.5">
                     {msg.hasAlert ? (
                       <span className="text-red-400 font-medium">🚨 Максимальная громкость + Gain Boost (3x крик!)</span>

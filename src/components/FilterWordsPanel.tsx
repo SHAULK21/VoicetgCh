@@ -52,8 +52,8 @@ export const FilterWordsPanel: React.FC<FilterWordsPanelProps> = ({
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-5 text-slate-200">
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex flex-wrap items-center gap-2">
           <Filter className="w-5 h-5 text-red-400" />
           <h2 className="font-semibold text-white text-base">Фильтр Слов для Громкой Озвучки (3x)</h2>
         </div>
@@ -75,7 +75,7 @@ export const FilterWordsPanel: React.FC<FilterWordsPanelProps> = ({
 
       {/* Add word form */}
       <form onSubmit={handleSubmit} className="flex gap-2">
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <input
             type="text"
             value={inputWord}
