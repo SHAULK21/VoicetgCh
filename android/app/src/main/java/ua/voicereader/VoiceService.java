@@ -10,7 +10,7 @@ import android.speech.tts.*;
 import java.util.*;
 
 public final class VoiceService extends Service {
-    static final String SPEAK="ua.voicereader.SPEAK",STOP="ua.voicereader.STOP",TEST="ua.voicereader.TEST",PAUSE="ua.voicereader.PAUSE";
+    static final String SPEAK="ua.voicereader.SPEAK",STOP="ua.voicereader.STOP",TEST="ua.voicereader.TEST",TEST_NORMAL="ua.voicereader.TEST_NORMAL",PAUSE="ua.voicereader.PAUSE";
     static volatile boolean running=false;static volatile long startedAt=0;
     private TextToSpeech tts;private boolean ready=false,speaking=false,destroyed=false;
     private final ReaderRules.PlaybackGate gate=new ReaderRules.PlaybackGate();
@@ -21,7 +21,7 @@ public final class VoiceService extends Service {
     private AudioManager audio;private AudioFocusRequest focus;private PowerManager.WakeLock wake;
     private MediaSession session;private String currentId="",currentTitle="Очікування сповіщень";
     private static final String CHANNEL="reader_playback";
-    static final class Speech {String title,text;boolean alert;Speech(String t,String s,boolean a){title=t;text=s;alert=a;}}
+    static final class Speech {String title,text;boolean alert,plainPreview;Speech(String t,String s,boolean a,boolean preview){title=t;text=s;alert=a;plainPreview=preview;}}
     @Override public void onCreate() {
         super.onCreate();startedAt=System.currentTimeMillis();running=true;ReaderNotifications.seedBeforeReading();
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"Фонове читання",NotificationManager.IMPORTANCE_LOW));
@@ -57,6 +57,9 @@ public final class VoiceService extends Service {
         if(STOP.equals(action)){stopSelf();return START_NOT_STICKY;}
         if(PAUSE.equals(action)){if(gate.paused()){gate.resume();drain();publish();}else pause();return START_NOT_STICKY;}
         if("START".equals(action)){gate.resume();drain();publish();}
+        else if(TEST_NORMAL.equals(action)){
+            gate.resume();enqueue("Звичайна гучність", "Це перевірка звичайної гучності читання та нічного режиму.",true);
+        }
         else if(TEST.equals(action)) {
             gate.resume();
             Set<String> words=new Config(this).words();String keyword=words.isEmpty()?"":words.iterator().next();
@@ -65,18 +68,19 @@ public final class VoiceService extends Service {
         else if(SPEAK.equals(action)&&new Config(this).enabled())enqueue(intent.getStringExtra("title"),intent.getStringExtra("text"));
         return START_NOT_STICKY;
     }
-    private void enqueue(String title,String text) {
+    private void enqueue(String title,String text){enqueue(title,text,false);}
+    private void enqueue(String title,String text,boolean plainPreview) {
         if(text==null||text.trim().isEmpty())return;
-        Config config=new Config(this);List<String> matched=ReaderRules.matched(text,config.words());
-        if(config.onlyKeywords()&&matched.isEmpty()){config.error("Збігів ключових фраз немає: повідомлення без звуку.");return;}
-        Speech item=new Speech(title,text,!matched.isEmpty());
+        Config config=new Config(this);List<String> matched=plainPreview?Collections.emptyList():ReaderRules.matched(text,config.words());
+        if(!plainPreview&&config.onlyKeywords()&&matched.isEmpty()){config.error("Збігів ключових фраз немає: повідомлення без звуку.");return;}
+        Speech item=new Speech(title,text,!matched.isEmpty(),plainPreview);
         if(queue.size()>=20){queue.removeFirst();config.error("Чергу переповнено: старе сповіщення пропущено.");}
         if(item.alert)queue.addFirst(item);else queue.addLast(item);config.error(gate.waitingFocus()?"Очікуємо завершення іншого звуку; потім читання відновиться.":gate.paused()?"Читання на паузі. Натисніть ▶ у сповіщенні або «Запустити читання».":"Повідомлення в черзі озвучення.");drain();
     }
     private void drain() {
         if(!ready||gate.paused()||speaking||queue.isEmpty())return;
         Speech item=queue.peekFirst();Config config=new Config(this);boolean night=config.night();
-        List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,ReaderRules.matched(item.text,config.words()),config.loudKeywords(),config.onlyKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
+        List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,item.plainPreview?Collections.emptyList():ReaderRules.matched(item.text,config.words()),config.loudKeywords(),!item.plainPreview&&config.onlyKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
         if(parts.isEmpty()){queue.removeFirst();config.error("Збігів ключових фраз немає: повідомлення без звуку.");main.post(this::drain);return;}
         int focusResult=audio.requestAudioFocus(focus);
         if(focusResult!=AudioManager.AUDIOFOCUS_REQUEST_GRANTED){
