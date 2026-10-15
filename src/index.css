@@ -1,1 +1,11 @@
 @import "tailwindcss";
+@layer components {
+  .control { @apply inline-flex items-center justify-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs font-medium text-slate-100 disabled:opacity-50; min-height:44px; }
+}
+html,body,#root { min-width:320px; }
+body { margin:0; background:#020617; }
+button,input,textarea { touch-action:manipulation; }
+input,textarea { font-size:16px; }
+button { cursor:pointer; }
+button:disabled { cursor:default; }
+button:focus-visible,input:focus-visible,textarea:focus-visible { outline:2px solid #38bdf8; outline-offset:3px; }

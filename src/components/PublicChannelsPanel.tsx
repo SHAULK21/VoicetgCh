@@ -10,13 +10,7 @@ interface PublicChannelsPanelProps {
   onCheckNow: () => Promise<number>;
 }
 
-const POPULAR_SUGGESTIONS = [
-  { username: 'bbbreaking', title: 'Раньше всех. Ну почти' },
-  { username: 'bankrollo', title: 'Банкста' },
-  { username: 'shot_shot', title: 'SHOT' },
-  { username: 'durov', title: 'Du Rove' },
-  { username: 'rian_ru', title: 'РИА Новости' },
-];
+const POPULAR_SUGGESTIONS = [{username:'durov',title:'Du Rove'}];
 
 export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
   channels,
@@ -34,28 +28,26 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
     e.preventDefault();
     if (!inputVal.trim()) return;
     setLoading(true);
-    await onAddChannel(inputVal.trim());
-    setInputVal('');
-    setLoading(false);
+    try { await onAddChannel(inputVal.trim()); setInputVal(''); } catch {} finally { setLoading(false); }
   };
 
   const handleManualCheck = async () => {
     setChecking(true);
     setCheckResult(null);
-    const newPosts = await onCheckNow();
-    setChecking(false);
-    setCheckResult(newPosts > 0 ? `Найдено новых постов: ${newPosts}!` : 'Все каналы проверены. Новых постов пока нет.');
-    setTimeout(() => setCheckResult(null), 3500);
+    try {
+      const newPosts = await onCheckNow();
+      setCheckResult(newPosts > 0 ? `Найдено новых постов: ${newPosts}` : 'Проверка завершена. Смотрите статус каждого канала.');
+    } catch {} finally { setChecking(false); }
   };
 
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-5 space-y-5 text-slate-200">
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex flex-wrap items-center gap-2">
           <Globe className="w-5 h-5 text-sky-400" />
           <div>
             <h2 className="font-semibold text-white text-base">Общедоступные Telegram Каналы</h2>
-            <p className="text-xs text-slate-400">Мониторинг любых открытых каналов (права админа не нужны!)</p>
+            <p className="text-xs text-slate-400">Публичные страницы проверяются, пока панель открыта</p>
           </div>
         </div>
         <button
@@ -73,7 +65,7 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
       <div className="bg-sky-950/30 border border-sky-800/40 rounded-lg p-3 text-xs text-sky-200/90 flex items-start gap-2.5">
         <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
         <div>
-          <span className="font-semibold text-white">Вы не администратор? Без проблем!</span> Станция считывает общедоступный веб-поток постов <code className="text-sky-300 bg-sky-950 px-1 py-0.5 rounded font-mono">t.me/s/канал</code> каждые несколько секунд и сразу произносит новые сообщения вслух!
+          <span className="font-semibold text-white">Вы не администратор? Без проблем!</span> Панель проверяет публичные посты на <code className="text-sky-300 bg-sky-950 px-1 py-0.5 rounded font-mono">t.me/s/канал</code> при открытом экране. Для чтения с погашенным экраном используйте Android-компаньон и уведомления Telegram.
         </div>
       </div>
 
@@ -86,7 +78,7 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
 
       {/* Add Channel Form */}
       <form onSubmit={handleAdd} className="flex gap-2">
-        <div className="relative flex-1">
+        <div className="relative flex-1 min-w-0">
           <input
             type="text"
             value={inputVal}
@@ -118,7 +110,7 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
                 key={sug.username}
                 type="button"
                 disabled={isAdded}
-                onClick={() => onAddChannel(sug.username)}
+                onClick={() => { void onAddChannel(sug.username).catch(() => {}); }}
                 className={`px-2.5 py-1 text-xs rounded-md border transition-colors cursor-pointer flex items-center gap-1.5 ${
                   isAdded
                     ? 'bg-slate-800/40 text-slate-500 border-slate-800 cursor-default'
@@ -152,8 +144,8 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
                 key={ch.username}
                 className="p-3 rounded-lg bg-slate-800/60 border border-slate-700/80 flex items-center justify-between gap-3 hover:border-slate-600 transition-colors"
               >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1 break-words">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold text-sm text-white truncate">{ch.title || `@${ch.username}`}</span>
                     <a
                       href={`https://t.me/s/${ch.username}`}
@@ -184,7 +176,7 @@ export const PublicChannelsPanel: React.FC<PublicChannelsPanelProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => onToggleChannel(ch.username)}

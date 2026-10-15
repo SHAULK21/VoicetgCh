@@ -5,7 +5,7 @@ import { Volume2, VolumeX, Sparkles, Sliders, Mic, Play, Radio, Moon, Sun, Feath
 interface VoiceSettingsPanelProps {
   settings: VoiceSettings;
   onChange: (updated: Partial<VoiceSettings>) => void;
-  onTestVoice: (sampleText: string, isAlert: boolean) => void;
+  onTestVoice: (sampleText: string, isAlert: boolean, voice?: GeminiVoice) => void;
 }
 
 const VOICES: Array<{ id: GeminiVoice; label: string; desc: string; tag: string }> = [
@@ -34,8 +34,8 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
         : 'bg-slate-900/90 border-slate-800'
     }`}>
       {/* Header */}
-      <div className="flex items-center justify-between pb-3 border-b border-slate-800">
-        <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-800">
+        <div className="flex flex-wrap items-center gap-2">
           <Sliders className="w-5 h-5 text-sky-400" />
           <h2 className="font-semibold text-white text-base">Настройка Синтеза Речи и Голоса</h2>
         </div>
@@ -57,7 +57,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
               <Moon className="w-4 h-4" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="font-semibold text-sm text-white">Ночной режим (Тихий нежный голос)</span>
                 {settings.nightMode && (
                   <span className="text-[10px] font-mono text-indigo-300 bg-indigo-900/80 px-2 py-0.5 rounded border border-indigo-700">
@@ -117,7 +117,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
             <div className="p-2 rounded bg-indigo-900/30 border border-indigo-800/40 text-[11px] text-indigo-200 flex items-center gap-2">
               <BellRing className="w-3.5 h-3.5 text-amber-400 shrink-0" />
               <span>
-                При появлении слов из фильтра ночной режим <b>моментально прерывается</b> и слово громко кричится 3 раза!
+                При появлении слов из фильтра ночной режим <b>не применяется к тревоге</b> и слово повторяется 3 раза!
               </span>
             </div>
           </div>
@@ -162,7 +162,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
               <span className="font-semibold text-sm">Browser Speech API</span>
             </div>
             <p className="text-xs text-slate-400 line-clamp-1">
-              Нулевая задержка, системный встроенный синтезатор
+              Системный голос устройства, без ключа Gemini
             </p>
           </button>
         </div>
@@ -215,7 +215,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
                           : v.id === 'Fenrir'
                           ? 'Внимание! Это уверенный, низкий дикторский голос для срочных сообщений.'
                           : `Здравствуйте! Это живой дикторский голос ${v.label}. Чистая человеческая речь без роботов.`,
-                        false
+                        false, v.id
                       );
                     }}
                     className="inline-flex items-center gap-1 text-[11px] font-medium text-sky-400 hover:text-sky-300 py-0.5 px-2 rounded bg-sky-950/60 hover:bg-sky-900/60 border border-sky-800/60 transition-colors"
@@ -230,6 +230,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
         </div>
       </div>
 
+      {settings.engine === 'gemini' && <p className="text-xs text-slate-400">Скорость и тональность доступны для системного голоса. Для Gemini используются выбранный голос и стиль чтения.</p>}
       {/* Sliders: Rate, Pitch, Alert Volume Boost */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-1">
         {/* Speed */}
@@ -243,6 +244,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
             min="0.75"
             max="1.75"
             step="0.05"
+            disabled={settings.engine === 'gemini'}
             value={settings.speechRate}
             onChange={(e) => onChange({ speechRate: parseFloat(e.target.value) })}
             className="w-full accent-sky-400 cursor-pointer"
@@ -265,6 +267,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
             min="-5"
             max="5"
             step="1"
+            disabled={settings.engine === 'gemini'}
             value={settings.pitch}
             onChange={(e) => onChange({ pitch: parseInt(e.target.value, 10) })}
             className="w-full accent-sky-400 cursor-pointer"
@@ -304,7 +307,7 @@ export const VoiceSettingsPanel: React.FC<VoiceSettingsPanelProps> = ({ settings
         <div className="text-xs text-slate-400">
           Проверьте звучание голоса прямо сейчас:
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {settings.nightMode ? (
             <button
               type="button"

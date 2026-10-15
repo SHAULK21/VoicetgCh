@@ -51,31 +51,26 @@ export const CommandSimulatorModal: React.FC<CommandSimulatorModalProps> = ({
     e.preventDefault();
     if (!commandInput.trim()) return;
     setLoading(true);
-    await onExecuteCommand(commandInput.trim());
-    setCommandInput('');
-    setLoading(false);
+    try {await onExecuteCommand(commandInput.trim());setCommandInput('');} finally {setLoading(false);}
   };
 
   const handleSendCustomPost = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customPostText.trim()) return;
     setLoading(true);
-    await onSimulatePost(customPostText.trim(), customChannelTitle, customChannelUsername);
-    setCustomPostText('');
-    setLoading(false);
+    try {await onSimulatePost(customPostText.trim(), customChannelTitle, customChannelUsername);setCustomPostText('');} finally {setLoading(false);}
   };
 
   const runQuickCommand = async (cmd: string) => {
     setLoading(true);
-    await onExecuteCommand(cmd);
-    setLoading(false);
+    try {await onExecuteCommand(cmd);} finally {setLoading(false);}
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
       <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col shadow-2xl text-slate-200">
         {/* Header */}
-        <div className="p-4 px-6 border-b border-slate-800 flex items-center justify-between">
+        <div className="p-4 px-6 border-b border-slate-800 flex items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <div className="p-2 rounded-lg bg-sky-950 text-sky-400 border border-sky-800/60">
               <Terminal className="w-5 h-5" />
@@ -179,7 +174,7 @@ export const CommandSimulatorModal: React.FC<CommandSimulatorModalProps> = ({
 
             {/* Command Input Form */}
             <form onSubmit={handleCommandSubmit} className="flex gap-2">
-              <div className="relative flex-1">
+              <div className="relative flex-1 min-w-0">
                 <input
                   type="text"
                   value={commandInput}

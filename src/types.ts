@@ -25,6 +25,7 @@ export interface VoiceSettings {
   nightMode: boolean;
   nightVolume: number; // e.g. 0.25 (quiet whisper)
   nightVoice: GeminiVoice; // e.g. 'Zephyr' (soft gentle voice)
+  notify?: boolean;
 }
 
 export interface TrackedChannel {
@@ -38,11 +39,8 @@ export interface TrackedChannel {
 }
 
 export interface BotConfig {
-  token: string;
   botUsername: string;
   botName: string;
-  isPolling: boolean;
-  targetChannel: string;
   lastError: string;
   status: 'standby' | 'polling' | 'connected' | 'error';
 }

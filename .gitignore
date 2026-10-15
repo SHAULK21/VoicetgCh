@@ -6,3 +6,10 @@ coverage/
 *.log
 .env*
 !.env.example
+.tgcloud/
+data/
+android/.gradle/
+android/local.properties
+android/**/build/
+*.jks
+*.keystore

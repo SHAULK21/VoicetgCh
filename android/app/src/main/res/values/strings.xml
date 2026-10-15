@@ -1,0 +1,5 @@
+<resources>
+    <string name="reader_status">%1$s\n%2$s</string>
+    <string name="reader_running">● Служба работает</string>
+    <string name="reader_stopped">○ Служба остановлена</string>
+</resources>
