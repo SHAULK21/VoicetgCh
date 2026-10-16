@@ -3,6 +3,13 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 import java.util.*;
 public class ReaderRulesTest {
+    @Test public void lengthLimitAllowsExactBoundaryAndRejectsWholeLongerText(){
+        assertFalse(ReaderRules.tooLong("а".repeat(500),true,500));assertTrue(ReaderRules.tooLong("а".repeat(501),true,500));
+        assertFalse(ReaderRules.tooLong("а".repeat(501),false,500));
+    }
+    @Test public void lengthCountsSupplementaryCharactersOnce(){
+        assertFalse(ReaderRules.tooLong("😀".repeat(500),true,500));assertTrue(ReaderRules.tooLong("😀".repeat(501),true,500));
+    }
     @Test public void emptyAllowlistNeverReadsPrivateChat(){assertFalse(ReaderRules.accepts("Private",Set.of()));}
     @Test public void matchIsExactAndCaseInsensitive(){Set<String>s=ReaderRules.lines("Мой канал\nNews");assertTrue(ReaderRules.accepts("МОЙ КАНАЛ",s));assertFalse(ReaderRules.accepts("Мой канал — личный чат",s));}
     @Test public void channelTitleWithCommaIsNotSplit(){assertTrue(ReaderRules.accepts("News, today",ReaderRules.titles("News, today\nOther")));assertFalse(ReaderRules.accepts("News",ReaderRules.titles("News, today")));}

@@ -93,6 +93,7 @@ public final class ReaderNotifications extends NotificationListenerService {
         String hash=history.messageId(sbn.getPackageName(),title,text,time,discriminator);
         if(!history.claim(hash)){if(!baseline)diagnostic(config,"Повтор уже отриманого повідомлення пропущено.");return true;}
         if(baseline)return true;
+        if(config.tooLong(text)){diagnostic(config,config.lengthSkipReason());return true;}
         if(config.onlyKeywords()&&ReaderRules.matched(text,config.words()).isEmpty()){diagnostic(config,"Збігів ключових фраз немає: повідомлення без звуку.");return true;}
         try {
             startService(new Intent(this,VoiceService.class).setAction(VoiceService.SPEAK).putExtra("title",title).putExtra("text",text));

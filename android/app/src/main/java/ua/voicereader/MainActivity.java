@@ -12,7 +12,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity {
-    private EditText titles,words;private Switch night,loudKeywords,onlyKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics,lifecycleStatus;
+    private EditText titles,words;private Switch night,loudKeywords,onlyKeywords,skipLong;private SeekBar rate,pitch,normalVolume,alertVolume,maxLength;private TextView status,diagnostics,lifecycleStatus;
     private static final int IMPORT=4;
     private boolean loadingSettings;
     private final Handler main=new Handler(Looper.getMainLooper());
@@ -32,6 +32,11 @@ public final class MainActivity extends Activity {
         label(root,"Ключові слова або фрази — через кому",16);words=input(root,"терміново, тривога, важливо",3);
         onlyKeywords=new Switch(this);onlyKeywords.setText("Озвучувати лише ключові фрази");root.addView(onlyKeywords);
         label(root,"У цьому режимі звучать тільки знайдені фрази зі списку. Повний текст і повідомлення без збігів не озвучуються. Гучний акцент та три повтори можна вимкнути нижче.",14);
+        skipLong=new Switch(this);skipLong.setText("Не читати довгі повідомлення");root.addView(skipLong);
+        TextView lengthValue=label(root,getString(R.string.message_length_limit,500),14);
+        maxLength=new SeekBar(this);maxLength.setMax(29);root.addView(maxLength);
+        maxLength.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar bar,int progress,boolean user){lengthValue.setText(getString(R.string.message_length_limit,100+progress*100));if(user)voiceSettingChanged();}public void onStartTrackingTouch(SeekBar bar){}public void onStopTrackingTouch(SeekBar bar){}});
+        label(root,"Повідомлення понад ліміт пропускаються повністю, навіть із ключовими фразами. Межа: 100–3000 символів. Перевіряється кожне нове повідомлення окремо, за доступним текстом сповіщення. Зміни зберігаються автоматично.",14);
         loudKeywords=new Switch(this);loudKeywords.setText("Гучно озвучувати ключові слова тричі");root.addView(loudKeywords);
         label(root,"Спочатку — «Увага!» та знайдені слова, потім — повідомлення. Гучність задається відносно медіагучності телефону; застосунок її не змінює. Це український голос, без автоматичного перекладу тексту.",14);
         label(root,"Гучність, нічний режим і параметри голосу зберігаються автоматично та діють із наступної озвучки. Назви каналів і список фраз збережіть кнопкою нижче.",14);
@@ -52,7 +57,7 @@ public final class MainActivity extends Activity {
         label(root,"На Poco/Xiaomi дозвольте роботу у фоні та виберіть батарею «Без обмежень». Не вимикайте службу в системному диспетчері. Після перезавантаження запустіть читання знову. Медіагучність і налаштування TTS впливають на чутність.",14);
         label(root,"Приватність: застосунок приймає сповіщення офіційного Telegram/Telegram X і читає лише точні збіги зі списку. Доступу до інтернету немає. Текст повідомлень не зберігається; локально зберігаються хеші проти повторів та останній заголовок для діагностики. Системний синтезатор мовлення може використовувати онлайн-голос.",13);
         load();
-        for(Switch toggle:new Switch[]{night,loudKeywords,onlyKeywords})toggle.setOnCheckedChangeListener((button,checked)->voiceSettingChanged());
+        for(Switch toggle:new Switch[]{night,loudKeywords,onlyKeywords,skipLong})toggle.setOnCheckedChangeListener((button,checked)->{maxLength.setEnabled(skipLong.isChecked());voiceSettingChanged();});
         SeekBar.OnSeekBarChangeListener voiceListener=new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar bar,int progress,boolean user){if(user)voiceSettingChanged();}public void onStartTrackingTouch(SeekBar bar){}public void onStopTrackingTouch(SeekBar bar){}};
         rate.setOnSeekBarChangeListener(voiceListener);pitch.setOnSeekBarChangeListener(voiceListener);
     }
@@ -88,8 +93,8 @@ public final class MainActivity extends Activity {
     }
     private void save(){new Config(this).prefs.edit().putString("titles",titles.getText().toString().trim()).putString("words",words.getText().toString().trim()).apply();saveVoiceSettings();}
     private void voiceSettingChanged(){if(!loadingSettings)saveVoiceSettings();}
-    private void saveVoiceSettings(){new Config(this).prefs.edit().putBoolean("only_keywords",onlyKeywords.isChecked()).putBoolean("loud_keywords",loudKeywords.isChecked()).putFloat("normal_volume",(10+normalVolume.getProgress())/100f).putFloat("alert_volume",(10+alertVolume.getProgress())/100f).putBoolean("night",night.isChecked()).putFloat("rate",0.75f+rate.getProgress()/100f).putFloat("pitch",0.5f+pitch.getProgress()/100f).apply();}
-    private void load(){loadingSettings=true;try{Config c=new Config(this);titles.setText(c.prefs.getString("titles",""));words.setText(c.wordText());onlyKeywords.setChecked(c.onlyKeywords());loudKeywords.setChecked(c.loudKeywords());normalVolume.setProgress(Math.round(c.normalVolume()*100)-10);alertVolume.setProgress(Math.round(c.alertVolume()*100)-10);night.setChecked(c.night());rate.setProgress(Math.round((c.rate()-0.75f)*100));pitch.setProgress(Math.round((c.pitch()-0.5f)*100));}finally{loadingSettings=false;}}
+    private void saveVoiceSettings(){new Config(this).prefs.edit().putBoolean("skip_long",skipLong.isChecked()).putInt("max_message_length",100+maxLength.getProgress()*100).putBoolean("only_keywords",onlyKeywords.isChecked()).putBoolean("loud_keywords",loudKeywords.isChecked()).putFloat("normal_volume",(10+normalVolume.getProgress())/100f).putFloat("alert_volume",(10+alertVolume.getProgress())/100f).putBoolean("night",night.isChecked()).putFloat("rate",0.75f+rate.getProgress()/100f).putFloat("pitch",0.5f+pitch.getProgress()/100f).apply();}
+    private void load(){loadingSettings=true;try{Config c=new Config(this);titles.setText(c.prefs.getString("titles",""));words.setText(c.wordText());skipLong.setChecked(c.skipLong());maxLength.setProgress((c.maxMessageLength()-100)/100);maxLength.setEnabled(c.skipLong());onlyKeywords.setChecked(c.onlyKeywords());loudKeywords.setChecked(c.loudKeywords());normalVolume.setProgress(Math.round(c.normalVolume()*100)-10);alertVolume.setProgress(Math.round(c.alertVolume()*100)-10);night.setChecked(c.night());rate.setProgress(Math.round((c.rate()-0.75f)*100));pitch.setProgress(Math.round((c.pitch()-0.5f)*100));}finally{loadingSettings=false;}}
     @Override protected void onActivityResult(int request,int result,Intent data){super.onActivityResult(request,result,data);if(request==IMPORT&&result==RESULT_OK&&data!=null&&data.getData()!=null){try(InputStream input=getContentResolver().openInputStream(data.getData())){if(input==null)throw new IOException();ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] chunk=new byte[4096];int count;while((count=input.read(chunk))!=-1){out.write(chunk,0,count);if(out.size()>65536)throw new IOException();}byte[] bytes=out.toByteArray();new Config(this).importJson(new String(bytes,StandardCharsets.UTF_8));load();toast("Імпортовано. Перевірте назви каналів за сповіщеннями.");}catch(Exception e){toast("Не вдалося імпортувати. Потрібен файл налаштувань Voice Reader до 64 КБ.");}}}
     @Override protected void onResume(){super.onResume();main.post(update);}
     @Override protected void onPause(){main.removeCallbacks(update);super.onPause();}

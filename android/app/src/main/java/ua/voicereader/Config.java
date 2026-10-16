@@ -17,6 +17,10 @@ final class Config {
     float alertVolume(){return prefs.getFloat("alert_volume",1f);}
     boolean onlyKeywords(){return prefs.getBoolean("only_keywords",false);}
     boolean loudKeywords(){return prefs.getBoolean("loud_keywords",true);}
+    boolean skipLong(){return prefs.getBoolean("skip_long",true);}
+    int maxMessageLength(){return Math.max(100,Math.min(3000,prefs.getInt("max_message_length",500)));}
+    boolean tooLong(String text){return ReaderRules.tooLong(text,skipLong(),maxMessageLength());}
+    String lengthSkipReason(){return "Довге повідомлення пропущено: ліміт "+maxMessageLength()+" символів (разом із ключовими фразами).";}
     Set<String> titles(){return ReaderRules.titles(prefs.getString("titles",""));}
     String wordText(){String value=prefs.getString("words",ReaderRules.DEFAULT_WORDS);return value.equals("внимание, срочно, тревога, важно")?ReaderRules.DEFAULT_WORDS:value;}
     Set<String> words(){return ReaderRules.lines(wordText());}

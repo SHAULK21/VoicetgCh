@@ -21,7 +21,7 @@ public class VoiceService extends Service {
     private AudioManager audio;private AudioFocusRequest focus;private PowerManager.WakeLock wake;
     private MediaSession session;private String currentId="",currentTitle="Очікування сповіщень";
     private static final String CHANNEL="reader_playback";
-    static final class Speech {String title,text;boolean alert,plainPreview;Speech(String t,String s,boolean a,boolean preview){title=t;text=s;alert=a;plainPreview=preview;}}
+    static final class Speech {String title,text;boolean alert,plainPreview,testPreview;Speech(String t,String s,boolean a,boolean plain,boolean test){title=t;text=s;alert=a;plainPreview=plain;testPreview=test;}}
     @Override public void onCreate() {
         super.onCreate();recordServiceEvent("Службу запущено");startedAt=System.currentTimeMillis();running=true;ReaderNotifications.seedBeforeReading();if(new Config(this).enabled()&&!ReaderNotifications.connected())ReaderNotifications.reconnect(this);
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"Фонове читання",NotificationManager.IMPORTANCE_LOW));
@@ -60,12 +60,12 @@ public class VoiceService extends Service {
         if(PAUSE.equals(action)){if(gate.paused()){gate.resume();drain();publish();}else pause();return START_STICKY;}
         if("START".equals(action)){gate.resume();drain();publish();}
         else if(TEST_NORMAL.equals(action)){
-            gate.resume();enqueue("Звичайна гучність", "Це перевірка звичайної гучності читання та нічного режиму.",true);
+            gate.resume();enqueue("Звичайна гучність", "Це перевірка звичайної гучності читання та нічного режиму.",true,true);
         }
         else if(TEST.equals(action)) {
             gate.resume();
             Set<String> words=new Config(this).words();String keyword=words.isEmpty()?"":words.iterator().next();
-            enqueue("Перевірка", "Перевірка українського голосу. "+(keyword.isEmpty()?"":"Ключове слово: "+keyword+". ")+"Після запуску можна вимкнути екран.");
+            enqueue("Перевірка", "Перевірка українського голосу. "+(keyword.isEmpty()?"":"Ключове слово: "+keyword+". ")+"Після запуску можна вимкнути екран.",false,true);
         }
         else if(SPEAK.equals(action)&&new Config(this).enabled())enqueue(intent.getStringExtra("title"),intent.getStringExtra("text"));
         return START_STICKY;
@@ -73,18 +73,21 @@ public class VoiceService extends Service {
     private void recordServiceEvent(String event){new Config(this).prefs.edit().putString("service_event",event).putLong("service_event_at",System.currentTimeMillis()).apply();}
     private void stopByUser(){new Config(this).prefs.edit().putBoolean("enabled",false).apply();recordServiceEvent("Зупинено користувачем");stopSelf();}
     private void stopAfterVoiceFailure(){new Config(this).prefs.edit().putBoolean("enabled",false).apply();recordServiceEvent("Зупинено: синтезатор українського мовлення недоступний");stopSelf();}
-    private void enqueue(String title,String text){enqueue(title,text,false);}
-    private void enqueue(String title,String text,boolean plainPreview) {
+    private void enqueue(String title,String text){enqueue(title,text,false,false);}
+    private void enqueue(String title,String text,boolean plainPreview,boolean testPreview) {
         if(text==null||text.trim().isEmpty())return;
-        Config config=new Config(this);List<String> matched=plainPreview?Collections.emptyList():ReaderRules.matched(text,config.words());
+        Config config=new Config(this);
+        if(!testPreview&&config.tooLong(text)){config.error(config.lengthSkipReason());return;}
+        List<String> matched=plainPreview?Collections.emptyList():ReaderRules.matched(text,config.words());
         if(!plainPreview&&config.onlyKeywords()&&matched.isEmpty()){config.error("Збігів ключових фраз немає: повідомлення без звуку.");return;}
-        Speech item=new Speech(title,text,!matched.isEmpty(),plainPreview);
+        Speech item=new Speech(title,text,!matched.isEmpty(),plainPreview,testPreview);
         if(queue.size()>=20){queue.removeFirst();config.error("Чергу переповнено: старе сповіщення пропущено.");}
         if(item.alert)queue.addFirst(item);else queue.addLast(item);config.error(gate.waitingFocus()?"Очікуємо завершення іншого звуку; потім читання відновиться.":gate.paused()?"Читання на паузі. Натисніть ▶ у сповіщенні або «Запустити читання».":"Повідомлення в черзі озвучення.");drain();
     }
     private void drain() {
         if(!ready||gate.paused()||speaking||queue.isEmpty())return;
         Speech item=queue.peekFirst();Config config=new Config(this);boolean night=config.night();
+        if(!item.testPreview&&config.tooLong(item.text)){queue.removeFirst();config.error(config.lengthSkipReason());main.post(this::drain);return;}
         List<ReaderRules.Segment> parts=ReaderRules.speechPlan(item.text,item.plainPreview?Collections.emptyList():ReaderRules.matched(item.text,config.words()),config.loudKeywords(),!item.plainPreview&&config.onlyKeywords(),config.normalVolume(),config.alertVolume(),night,config.nightVolume(),Math.min(3000,TextToSpeech.getMaxSpeechInputLength()));
         if(parts.isEmpty()){queue.removeFirst();config.error("Збігів ключових фраз немає: повідомлення без звуку.");main.post(this::drain);return;}
         int focusResult=audio.requestAudioFocus(focus);

@@ -30,4 +30,24 @@ public class VoiceServiceLifecycleTest {
     @Test public void stopActionDisablesStickyRecovery(){
         assertEquals(Service.START_NOT_STICKY,service.onStartCommand(new Intent().setAction(VoiceService.STOP),0,1));assertFalse(new ua.voicereader.Config(service).enabled());assertEquals(Service.START_NOT_STICKY,service.onStartCommand(null,0,2));
     }
+    private java.util.Deque<?> queued(){return org.robolectric.util.ReflectionHelpers.getField(service,"queue");}
+    private void receive(String text){service.onStartCommand(new Intent().setAction(VoiceService.SPEAK).putExtra("title","Новини").putExtra("text",text),0,2);}
+    @Test public void longKeywordMessageNeverEntersFullReadingQueue(){
+        receive("тривога "+"а".repeat(500));assertTrue(queued().isEmpty());assertTrue(new ua.voicereader.Config(service).prefs.getString("status","").contains("Довге повідомлення"));
+    }
+    @Test public void keywordsOnlyCannotBypassLengthFilter(){
+        new ua.voicereader.Config(service).prefs.edit().putBoolean("only_keywords",true).commit();receive("тривога "+"а".repeat(500));assertTrue(queued().isEmpty());
+        receive("тривога коротке повідомлення");assertEquals(1,queued().size());
+    }
+    @Test public void disablingLengthFilterAcceptsLongMessage(){
+        new ua.voicereader.Config(service).prefs.edit().putBoolean("skip_long",false).commit();receive("а".repeat(501));assertEquals(1,queued().size());
+    }
+    @Test public void pendingMessageIsRecheckedAfterChangingLimit(){
+        ua.voicereader.Config config=new ua.voicereader.Config(service);config.prefs.edit().putInt("max_message_length",1000).commit();receive("а".repeat(501));assertEquals(1,queued().size());
+        config.prefs.edit().putInt("max_message_length",500).commit();org.robolectric.util.ReflectionHelpers.setField(service,"ready",true);org.robolectric.util.ReflectionHelpers.callInstanceMethod(service,"drain");assertTrue(queued().isEmpty());
+    }
+    @Test public void voiceTestsBypassLengthLimit(){
+        new ua.voicereader.Config(service).prefs.edit().putInt("max_message_length",100).putString("words","ф".repeat(120)).commit();
+        service.onStartCommand(new Intent().setAction(VoiceService.TEST),0,2);service.onStartCommand(new Intent().setAction(VoiceService.TEST_NORMAL),0,3);assertEquals(2,queued().size());
+    }
 }
