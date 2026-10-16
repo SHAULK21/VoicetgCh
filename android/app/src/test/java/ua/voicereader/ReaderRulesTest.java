@@ -3,6 +3,18 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 import java.util.*;
 public class ReaderRulesTest {
+    @Test public void ordinaryBodyIsOnceWithLoudEmergencyRepeatsEnabled(){
+        String text="Сьогодні відкрилася нова виставка.";
+        for(boolean night:new boolean[]{false,true}){
+            List<ReaderRules.Segment> plan=ReaderRules.speechPlan(text,ReaderRules.matched(text,ReaderRules.lines(ReaderRules.DEFAULT_WORDS)),true,false,.6f,1f,night,.28f,3000);
+            assertEquals(1,plan.size());assertEquals(text,plan.get(0).text);
+        }
+    }
+    @Test public void emergencyRepeatNeverRepeatsTheOrdinaryBody(){
+        String text="Тривога: перейдіть до укриття.";
+        List<ReaderRules.Segment> plan=ReaderRules.speechPlan(text,ReaderRules.matched(text,ReaderRules.lines("тривога")),true,false,.6f,1f,false,.28f,3000);
+        assertEquals(2,plan.size());assertEquals("Увага! ТРИВОГА! ТРИВОГА! ТРИВОГА!",plan.get(0).text);assertEquals(text,plan.get(1).text);
+    }
     @Test public void lengthLimitAllowsExactBoundaryAndRejectsWholeLongerText(){
         assertFalse(ReaderRules.tooLong("а".repeat(500),true,500));assertTrue(ReaderRules.tooLong("а".repeat(501),true,500));
         assertFalse(ReaderRules.tooLong("а".repeat(501),false,500));

@@ -37,8 +37,8 @@ public final class MainActivity extends Activity {
         maxLength=new SeekBar(this);maxLength.setMax(29);root.addView(maxLength);
         maxLength.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){public void onProgressChanged(SeekBar bar,int progress,boolean user){lengthValue.setText(getString(R.string.message_length_limit,100+progress*100));if(user)voiceSettingChanged();}public void onStartTrackingTouch(SeekBar bar){}public void onStopTrackingTouch(SeekBar bar){}});
         label(root,"Повідомлення понад ліміт пропускаються повністю, навіть із ключовими фразами. Межа: 100–3000 символів. Перевіряється кожне нове повідомлення окремо, за доступним текстом сповіщення. Зміни зберігаються автоматично.",14);
-        loudKeywords=new Switch(this);loudKeywords.setText("Гучно озвучувати ключові слова тричі");root.addView(loudKeywords);
-        label(root,"Спочатку — «Увага!» та знайдені слова, потім — повідомлення. Гучність задається відносно медіагучності телефону; застосунок її не змінює. Це український голос, без автоматичного перекладу тексту.",14);
+        loudKeywords=new Switch(this);loudKeywords.setText("Екстрені фрази — гучно тричі; звичайний текст — один раз");root.addView(loudKeywords);
+        label(root,"Лише фрази з вашого списку повторюються тричі. Звичайний текст повідомлення читається один раз. Спочатку — «Увага!» та знайдені фрази, потім — повідомлення. Гучність задається відносно медіагучності телефону; застосунок її не змінює. Це український голос, без автоматичного перекладу тексту.",14);
         label(root,"Гучність, нічний режим і параметри голосу зберігаються автоматично та діють із наступної озвучки. Назви каналів і список фраз збережіть кнопкою нижче.",14);
         normalVolume=volume(root,"Гучність звичайного читання",10,90);
         alertVolume=volume(root,"Гучність ключових слів",10,90);

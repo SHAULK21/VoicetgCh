@@ -51,33 +51,39 @@ public final class ReaderNotifications extends NotificationListenerService {
         if(!baseline&&!config.enabled()){diagnostic(config,"Читання вимкнено. Натисніть «Запустити читання».");return;}
         if(!baseline&&!ReaderRules.accepts(title,config.titles())){diagnostic(config,"Назва не збігається зі списком каналів. Додайте фактичний заголовок кнопкою нижче.");return;}
         if(!baseline&&!VoiceService.running){diagnostic(config,"Службу зупинено системою. Запустіть читання знову.");return;}
-        List<Incoming> messages=messages(extras);
-        int count=0;Map<String,Integer> occurrences=new HashMap<>();
-        for(Incoming message:messages){String text=message.text;if(!text.trim().isEmpty()){
-            count++;String identity=NotificationHistory.fingerprint(text+"|"+message.time);int occurrence=occurrences.getOrDefault(identity,0);occurrences.put(identity,occurrence+1);
-            emit(sbn,title,text,message.time,occurrence==0?"":"occurrence:"+occurrence,config,baseline);
-        }}
-        if(count==0){
-            List<String> lines=new ArrayList<>();CharSequence[] inbox=extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
-            if(inbox!=null)for(CharSequence line:inbox)if(!string(line).trim().isEmpty())lines.add(string(line));
-            if(!lines.isEmpty()){
-                String scope=sbn.getPackageName()+"|"+sbn.getKey();
-                List<Integer> fresh=history.freshIndexes(scope,lines);boolean[] handled=new boolean[lines.size()];Arrays.fill(handled,true);
-                for(int i:fresh)handled[i]=false;
-                if(!baseline&&fresh.isEmpty())diagnostic(config,"Оновлення сповіщення без нових повідомлень: повтор пропущено.");
-                for(int i:fresh){
-                    if(!emit(sbn,title,lines.get(i),sbn.getPostTime(),"inbox:"+i,config,baseline))break;
-                    handled[i]=true;
-                }
-                List<String> committed=new ArrayList<>();for(int i=0;i<lines.size();i++)if(handled[i])committed.add(lines.get(i));
-                history.remember(scope,committed,committed.size());
-            }else{
+        List<Incoming> incoming=messages(extras),messages=new ArrayList<>();
+        for(Incoming message:incoming)if(!message.text.trim().isEmpty())messages.add(message);
+        boolean structured=!messages.isEmpty();String fallbackDiscriminator="";
+        if(!structured){
+            CharSequence[] inbox=extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES);
+            if(inbox!=null)for(CharSequence line:inbox)if(!string(line).trim().isEmpty())messages.add(new Incoming(string(line),sbn.getPostTime()));
+            if(!messages.isEmpty())fallbackDiscriminator="inbox:";
+            else{
                 String body=string(extras.getCharSequence(Notification.EXTRA_BIG_TEXT));
                 if(body.trim().isEmpty())body=string(extras.getCharSequence(Notification.EXTRA_TEXT));
                 if(body.trim().isEmpty()){if(!baseline)diagnostic(config,"Telegram не передав текст. Увімкніть попередній перегляд сповіщень у Telegram.");return;}
-                emit(sbn,title,body,n.when>0?n.when:sbn.getPostTime(),"",config,baseline);
+                messages.add(new Incoming(body,n.when>0?n.when:sbn.getPostTime()));
             }
         }
+        String scope=sbn.getPackageName()+"|"+sbn.getKey();List<String> lines=new ArrayList<>();
+        for(Incoming message:messages)lines.add(ReaderRules.normalizeTitle(title)+"|"+message.text);
+        // Reposting a plain notification may change both 'when' and postTime without adding a message.
+        // Content snapshots also bridge a plain/Inbox/MessagingStyle change on the same notification.
+        Set<Integer> fresh=new HashSet<>();
+        if(structured&&history.wasStructured(scope)){for(int i=0;i<messages.size();i++)fresh.add(i);}
+        else fresh.addAll(history.freshIndexes(scope,lines));
+        if(!baseline&&fresh.isEmpty())diagnostic(config,"Оновлення сповіщення без нових повідомлень: повтор пропущено.");
+        boolean[] handled=new boolean[messages.size()];Map<String,Integer> occurrences=new HashMap<>();
+        for(int i=0;i<handled.length;i++)handled[i]=!fresh.contains(i);
+        for(int i=0;i<messages.size();i++){
+            Incoming message=messages.get(i);String discriminator=fallbackDiscriminator.isEmpty()?"":fallbackDiscriminator+i;
+            if(structured){String identity=NotificationHistory.fingerprint(message.text+"|"+message.time);int occurrence=occurrences.getOrDefault(identity,0);occurrences.put(identity,occurrence+1);discriminator=occurrence==0?"":"occurrence:"+occurrence;}
+            boolean alreadyHandled=!fresh.contains(i);
+            if(!emit(sbn,title,message.text,message.time,discriminator,config,baseline||alreadyHandled))break;
+            handled[i]=true;
+        }
+        List<String> committed=new ArrayList<>();for(int i=0;i<lines.size();i++)if(handled[i])committed.add(lines.get(i));
+        history.remember(scope,committed,committed.size(),structured);
         config.prefs.edit().putStringSet("seen",history.ids()).apply();
     }
     private static final class Incoming {final String text;final long time;Incoming(String text,long time){this.text=text;this.time=time;}}
