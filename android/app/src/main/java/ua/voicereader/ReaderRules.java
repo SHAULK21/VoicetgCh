@@ -6,6 +6,10 @@ import java.util.*;
 public final class ReaderRules {
     public static final String DEFAULT_WORDS="увага, терміново, тривога, важливо";
     private ReaderRules() {}
+    /** Count supplementary Unicode characters once; skip the whole source message. */
+    public static boolean tooLong(String text,boolean enabled,int limit) {
+        return enabled&&text.codePointCount(0,text.length())>limit;
+    }
     public static Set<String> lines(String text) {
         Set<String> result=new LinkedHashSet<>();
         for(String value:text.split("[\\n,]")) {String s=value.trim().toLowerCase(Locale.ROOT);if(!s.isEmpty()) result.add(s);}
