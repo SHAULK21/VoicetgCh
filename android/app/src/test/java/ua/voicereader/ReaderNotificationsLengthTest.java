@@ -2,7 +2,6 @@ package ua.voicereader;
 
 import android.app.*;
 import android.content.Intent;
-import android.os.UserHandle;
 import android.service.notification.StatusBarNotification;
 import org.junit.*;
 import static org.junit.Assert.*;
@@ -21,7 +20,7 @@ public class ReaderNotificationsLengthTest {
         new ua.voicereader.Config(reader).prefs.edit().clear().putBoolean("enabled",true).putString("titles","Новини").commit();VoiceService.running=true;
     }
     @After public void cleanup(){VoiceService.running=false;controller.destroy();}
-    private void post(Notification notification){reader.onNotificationPosted(new StatusBarNotification("org.telegram.messenger","org.telegram.messenger",1,null,1000,0,notification,UserHandle.of(0),null,1000));}
+    private void post(Notification notification){reader.onNotificationPosted(new StatusBarNotification("org.telegram.messenger","org.telegram.messenger",1,null,1000,0,notification,android.os.Process.myUserHandle(),null,1000));}
     private Intent nextSpeech(){return Shadows.shadowOf((Application)reader.getApplicationContext()).getNextStartedService();}
     @Test public void messagingHistorySkipsLongPostButReadsNewShortPost(){
         Notification.MessagingStyle style=new Notification.MessagingStyle("Користувач").setConversationTitle("Новини")
