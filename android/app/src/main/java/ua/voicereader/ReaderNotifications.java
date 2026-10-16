@@ -9,13 +9,15 @@ import java.util.*;
 public final class ReaderNotifications extends NotificationListenerService {
     private static final Set<String> PACKAGES=new HashSet<>(Arrays.asList("org.telegram.messenger","org.telegram.messenger.web","org.telegram.messenger.beta","org.thunderdog.challegram"));
     private static ReaderNotifications active;
+    private final Handler reconnectHandler=new Handler(Looper.getMainLooper());
+    private final Runnable reconnectOnce=()->{if(new Config(this).enabled()&&active==null)reconnect(this);};
     static boolean connected(){return active!=null;}
     private final NotificationHistory history=new NotificationHistory(200,40,100);
     @Override public void onListenerConnected(){
-        active=this;history.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));seedActive();
+        reconnectHandler.removeCallbacks(reconnectOnce);active=this;history.restore(new Config(this).prefs.getStringSet("seen",Collections.emptySet()));seedActive();
     }
-    @Override public void onListenerDisconnected(){active=null;new Config(this).prefs.edit().putString("notification_status","Доступ від'єднано. Натисніть «Перепідключити сповіщення».").apply();}
-    @Override public void onDestroy(){if(active==this)active=null;super.onDestroy();}
+    @Override public void onListenerDisconnected(){active=null;new Config(this).prefs.edit().putString("notification_status","Доступ від'єднано. Запитуємо повторне підключення.").apply();reconnectHandler.removeCallbacks(reconnectOnce);if(new Config(this).enabled())reconnectHandler.postDelayed(reconnectOnce,5000);}
+    @Override public void onDestroy(){reconnectHandler.removeCallbacks(reconnectOnce);if(active==this)active=null;super.onDestroy();}
     static void seedBeforeReading(){if(active!=null)active.seedActive();}
     static void reconnect(Context context){try{requestRebind(new ComponentName(context,ReaderNotifications.class));}catch(SecurityException e){new Config(context).prefs.edit().putString("notification_status","Android не надав доступ. Увімкніть його в налаштуваннях сповіщень.").apply();}}
     static List<String> activeTitles(){

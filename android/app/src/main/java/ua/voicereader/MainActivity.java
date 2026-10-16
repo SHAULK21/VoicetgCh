@@ -12,7 +12,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 
 public final class MainActivity extends Activity {
-    private EditText titles,words;private Switch night,loudKeywords,onlyKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics;
+    private EditText titles,words;private Switch night,loudKeywords,onlyKeywords;private SeekBar rate,pitch,normalVolume,alertVolume;private TextView status,diagnostics,lifecycleStatus;
     private static final int IMPORT=4;
     private boolean loadingSettings;
     private final Handler main=new Handler(Looper.getMainLooper());
@@ -22,7 +22,7 @@ public final class MainActivity extends Activity {
         ScrollView scroll=new ScrollView(this);LinearLayout root=new LinearLayout(this);root.setOrientation(LinearLayout.VERTICAL);int pad=(int)(20*getResources().getDisplayMetrics().density);root.setPadding(pad,pad,pad,pad);scroll.addView(root);setContentView(scroll);
         if(Build.VERSION.SDK_INT>=35)root.setOnApplyWindowInsetsListener((view,insets)->{android.graphics.Insets bars=insets.getInsets(WindowInsets.Type.systemBars());view.setPadding(pad,pad+bars.top,pad,pad+bars.bottom);return insets;});
         label(root,"Voice Reader",26);label(root,"Читання вибраних сповіщень Telegram українською з вимкненим екраном",16);
-        status=label(root,"",14);diagnostics=label(root,"",14);
+        status=label(root,"",14);diagnostics=label(root,"",14);lifecycleStatus=label(root,"",14);
         button(root,"Перепідключити сповіщення",()->{if(!listenerAllowed()){startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));return;}if(ReaderNotifications.connected()){toast("Доступ уже підключено. Перевірте заголовок каналу нижче.");return;}ReaderNotifications.reconnect(this);toast("Запит підключення надіслано. Зачекайте кілька секунд.");});
         label(root,"1. У Telegram увімкніть сповіщення потрібних каналів та попередній перегляд тексту. Застосунок читає доступний текст сповіщень; прихований або обрізаний текст отримати не зможе.",14);
         button(root,"Дозволити доступ до сповіщень",()->startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)));
@@ -45,9 +45,10 @@ public final class MainActivity extends Activity {
         button(root,"Імпорт налаштувань із панелі бота",()->{Intent i=new Intent(Intent.ACTION_OPEN_DOCUMENT).setType("application/json").addCategory(Intent.CATEGORY_OPENABLE);startActivityForResult(i,IMPORT);});
         label(root,"3. Встановіть український голос у налаштуваннях синтезу мовлення Android. Натисніть «Перевірити голос», потім запустіть читання та вимкніть екран. Сповіщення Voice Reader має залишитися. APK працює самостійно, без панелі бота. Голоси Gemini доступні у вебпанелі.",14);
         button(root,"▶ Запустити читання",()->start(false));button(root,"Перевірити звичайну гучність",()->start(VoiceService.TEST_NORMAL));button(root,"Перевірити голос і ключові слова",()->start(true));
-        button(root,"■ Зупинити читання",()->{new Config(this).prefs.edit().putBoolean("enabled",false).apply();stopService(new Intent(this,VoiceService.class));});
+        button(root,"■ Зупинити читання",()->{new Config(this).prefs.edit().putBoolean("enabled",false).putString("service_event","Зупинено користувачем").apply();stopService(new Intent(this,VoiceService.class));});
         button(root,"Налаштування синтезу мовлення",()->{try{startActivity(new Intent("com.android.settings.TTS_SETTINGS"));}catch(Exception e){startActivity(new Intent(Settings.ACTION_SETTINGS));}});
         button(root,"Налаштування батареї застосунку",()->startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,android.net.Uri.parse("package:"+getPackageName()))));
+        button(root,"Економія батареї Android",()->startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)));
         label(root,"На Poco/Xiaomi дозвольте роботу у фоні та виберіть батарею «Без обмежень». Не вимикайте службу в системному диспетчері. Після перезавантаження запустіть читання знову. Медіагучність і налаштування TTS впливають на чутність.",14);
         label(root,"Приватність: застосунок приймає сповіщення офіційного Telegram/Telegram X і читає лише точні збіги зі списку. Доступу до інтернету немає. Текст повідомлень не зберігається; локально зберігаються хеші проти повторів та останній заголовок для діагностики. Системний синтезатор мовлення може використовувати онлайн-голос.",13);
         load();
@@ -56,7 +57,11 @@ public final class MainActivity extends Activity {
         rate.setOnSeekBarChangeListener(voiceListener);pitch.setOnSeekBarChangeListener(voiceListener);
     }
     private void updateDiagnostics(){
-        Config c=new Config(this);long at=c.prefs.getLong("last_notification_at",0);
+        Config c=new Config(this);
+        PowerManager power=getSystemService(PowerManager.class);
+        String battery=power.isIgnoringBatteryOptimizations(getPackageName())?"Android не оптимізує батарею застосунку":"Android може обмежувати фонову роботу";
+        lifecycleStatus.setText(getString(R.string.service_health,battery,c.prefs.getString("service_event","Службу ще не запускали")));
+        long at=c.prefs.getLong("last_notification_at",0);
         String when=at==0?"ще не отримано":android.text.format.DateFormat.getTimeFormat(this).format(new java.util.Date(at));
         diagnostics.setText(getString(R.string.notification_diagnostics,listenerAllowed()?"дозволено":"не дозволено",ReaderNotifications.connected()?"підключено":"немає з'єднання",when,c.prefs.getString("last_title","—"),c.prefs.getString("notification_status","Очікуємо нове сповіщення Telegram.")));
     }
