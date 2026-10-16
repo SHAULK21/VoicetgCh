@@ -36,6 +36,10 @@ public class ReaderNotificationsRepeatTest {
     @Test public void missingSourceTimestampDoesNotUseRepostTimeAsNewMessage(){
         post(plain("Звичайна новина",0),1000);assertSpeech("Звичайна новина");post(plain("Звичайна новина",0),2000);assertNull(nextSpeech());
     }
+    @Test public void aCopyUnderAnotherNotificationKeyDoesNotReadTheBodyTwice(){
+        post(plain("Звичайна новина",100),1000);assertSpeech("Звичайна новина");
+        reader.onNotificationPosted(new StatusBarNotification("org.telegram.messenger","org.telegram.messenger",2,null,1000,0,0,plain("Звичайна новина",200),android.os.Process.myUserHandle(),2000));assertNull(nextSpeech());
+    }
     @Test public void styleChangesDoNotReadTheSameMessageAgain(){
         post(plain("Перша новина",100),1000);assertSpeech("Перша новина");
         post(builder(200).setStyle(new Notification.InboxStyle().addLine("Перша новина")).build(),2000);assertNull(nextSpeech());

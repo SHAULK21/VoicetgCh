@@ -79,7 +79,7 @@ public final class ReaderNotifications extends NotificationListenerService {
             Incoming message=messages.get(i);String discriminator=fallbackDiscriminator.isEmpty()?"":fallbackDiscriminator+i;
             if(structured){String identity=NotificationHistory.fingerprint(message.text+"|"+message.time);int occurrence=occurrences.getOrDefault(identity,0);occurrences.put(identity,occurrence+1);discriminator=occurrence==0?"":"occurrence:"+occurrence;}
             boolean alreadyHandled=!fresh.contains(i);
-            if(!emit(sbn,title,message.text,message.time,discriminator,config,baseline||alreadyHandled))break;
+            if(!emit(sbn,title,message.text,message.time,discriminator,config,baseline||alreadyHandled,structured))break;
             handled[i]=true;
         }
         List<String> committed=new ArrayList<>();for(int i=0;i<lines.size();i++)if(handled[i])committed.add(lines.get(i));
@@ -94,15 +94,18 @@ public final class ReaderNotifications extends NotificationListenerService {
         else for(Parcelable item:bundles)if(item instanceof Bundle){Bundle message=(Bundle)item;result.add(new Incoming(string(message.getCharSequence("text")),message.getLong("time",0)));}
         return result;
     }
-    private boolean emit(StatusBarNotification sbn,String title,String text,long time,String discriminator,Config config,boolean baseline){
+    private boolean emit(StatusBarNotification sbn,String title,String text,long time,String discriminator,Config config,boolean baseline,boolean structured){
         if(text.length()>16000){if(!baseline)diagnostic(config,"Текст перевищує ліміт 16000 символів.");return true;}
         String hash=history.messageId(sbn.getPackageName(),title,text,time,discriminator);
         if(!history.claim(hash)){if(!baseline)diagnostic(config,"Повтор уже отриманого повідомлення пропущено.");return true;}
         if(baseline)return true;
+        String scope=sbn.getPackageName()+"|"+sbn.getKey();long received=SystemClock.elapsedRealtime();
+        if(history.isMirror(sbn.getPackageName(),title,text,scope,time,structured,received)){diagnostic(config,"Копію повідомлення в іншому сповіщенні пропущено.");return true;}
         if(config.tooLong(text)){diagnostic(config,config.lengthSkipReason());return true;}
         if(config.onlyKeywords()&&ReaderRules.matched(text,config.words()).isEmpty()){diagnostic(config,"Збігів ключових фраз немає: повідомлення без звуку.");return true;}
         try {
-            startService(new Intent(this,VoiceService.class).setAction(VoiceService.SPEAK).putExtra("title",title).putExtra("text",text));
+            startService(new Intent(this,VoiceService.class).setAction(VoiceService.SPEAK).putExtra("title",title).putExtra("text",text).putExtra("delivery_id",hash));
+            history.delivered(sbn.getPackageName(),title,text,scope,time,structured,received);
             diagnostic(config,config.onlyKeywords()?"На озвучення передано тільки знайдені ключові фрази.":"Текст передано на озвучення.");return true;
         }catch(IllegalStateException|SecurityException e){history.retry(hash);diagnostic(config,"Android заблокував передачу тексту службі. Відкрийте застосунок і запустіть читання знову.");return false;}
     }
