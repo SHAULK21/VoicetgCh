@@ -9,7 +9,7 @@ import android.os.*;
 import android.speech.tts.*;
 import java.util.*;
 
-public final class VoiceService extends Service {
+public class VoiceService extends Service {
     static final String SPEAK="ua.voicereader.SPEAK",STOP="ua.voicereader.STOP",TEST="ua.voicereader.TEST",TEST_NORMAL="ua.voicereader.TEST_NORMAL",PAUSE="ua.voicereader.PAUSE";
     static volatile boolean running=false;static volatile long startedAt=0;
     private TextToSpeech tts;private boolean ready=false,speaking=false,destroyed=false;
@@ -23,10 +23,10 @@ public final class VoiceService extends Service {
     private static final String CHANNEL="reader_playback";
     static final class Speech {String title,text;boolean alert,plainPreview;Speech(String t,String s,boolean a,boolean preview){title=t;text=s;alert=a;plainPreview=preview;}}
     @Override public void onCreate() {
-        super.onCreate();startedAt=System.currentTimeMillis();running=true;ReaderNotifications.seedBeforeReading();
+        super.onCreate();recordServiceEvent("Службу запущено");startedAt=System.currentTimeMillis();running=true;ReaderNotifications.seedBeforeReading();if(new Config(this).enabled()&&!ReaderNotifications.connected())ReaderNotifications.reconnect(this);
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"Фонове читання",NotificationManager.IMPORTANCE_LOW));
         session=new MediaSession(this,"VoiceReader");
-        session.setCallback(new MediaSession.Callback(){@Override public void onPause(){pause();}@Override public void onPlay(){gate.resume();drain();publish();}@Override public void onStop(){stopSelf();}});
+        session.setCallback(new MediaSession.Callback(){@Override public void onPause(){pause();}@Override public void onPlay(){gate.resume();drain();publish();}@Override public void onStop(){stopByUser();}});
         session.setActive(true);publish();
         if(Build.VERSION.SDK_INT>=29)startForeground(1,notification(),ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);else startForeground(1,notification());
         audio=getSystemService(AudioManager.class);
@@ -40,9 +40,9 @@ public final class VoiceService extends Service {
         tts=new TextToSpeech(this,status->main.post(()->{
             if(destroyed)return;
             ready=status==TextToSpeech.SUCCESS;
-            if(!ready){new Config(this).error("Системний синтез мовлення недоступний. Встановіть голос у налаштуваннях Android.");stopSelf();return;}
+            if(!ready){new Config(this).error("Системний синтез мовлення недоступний. Встановіть голос у налаштуваннях Android.");stopAfterVoiceFailure();return;}
             tts.setAudioAttributes(attributes);
-            if(!selectUkrainianVoice()){ready=false;new Config(this).error("Український голос відсутній. Відкрийте налаштування синтезу мовлення, встановіть українську мову та запустіть читання знову.");stopSelf();return;}
+            if(!selectUkrainianVoice()){ready=false;new Config(this).error("Український голос відсутній. Відкрийте налаштування синтезу мовлення, встановіть українську мову та запустіть читання знову.");stopAfterVoiceFailure();return;}
             tts.setOnUtteranceProgressListener(new UtteranceProgressListener(){
                 @Override public void onStart(String id){}
                 @Override public void onDone(String id){main.post(()->complete(id));}
@@ -52,10 +52,12 @@ public final class VoiceService extends Service {
         }));
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId) {
-        if(intent==null){stopSelf();return START_NOT_STICKY;}
+        if(intent!=null&&STOP.equals(intent.getAction())){stopByUser();return START_NOT_STICKY;}
+        // 'enabled' is the user's choice, not the current process/service state.
+        if(!new Config(this).enabled()){stopSelf();return START_NOT_STICKY;}
+        if(intent==null){recordServiceEvent("Android відновив службу після завершення процесу");return START_STICKY;}
         String action=intent.getAction();
-        if(STOP.equals(action)){stopSelf();return START_NOT_STICKY;}
-        if(PAUSE.equals(action)){if(gate.paused()){gate.resume();drain();publish();}else pause();return START_NOT_STICKY;}
+        if(PAUSE.equals(action)){if(gate.paused()){gate.resume();drain();publish();}else pause();return START_STICKY;}
         if("START".equals(action)){gate.resume();drain();publish();}
         else if(TEST_NORMAL.equals(action)){
             gate.resume();enqueue("Звичайна гучність", "Це перевірка звичайної гучності читання та нічного режиму.",true);
@@ -66,8 +68,11 @@ public final class VoiceService extends Service {
             enqueue("Перевірка", "Перевірка українського голосу. "+(keyword.isEmpty()?"":"Ключове слово: "+keyword+". ")+"Після запуску можна вимкнути екран.");
         }
         else if(SPEAK.equals(action)&&new Config(this).enabled())enqueue(intent.getStringExtra("title"),intent.getStringExtra("text"));
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
+    private void recordServiceEvent(String event){new Config(this).prefs.edit().putString("service_event",event).putLong("service_event_at",System.currentTimeMillis()).apply();}
+    private void stopByUser(){new Config(this).prefs.edit().putBoolean("enabled",false).apply();recordServiceEvent("Зупинено користувачем");stopSelf();}
+    private void stopAfterVoiceFailure(){new Config(this).prefs.edit().putBoolean("enabled",false).apply();recordServiceEvent("Зупинено: синтезатор українського мовлення недоступний");stopSelf();}
     private void enqueue(String title,String text){enqueue(title,text,false);}
     private void enqueue(String title,String text,boolean plainPreview) {
         if(text==null||text.trim().isEmpty())return;
@@ -132,6 +137,6 @@ public final class VoiceService extends Service {
         Notification.Builder builder=new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Voice Reader").setContentText(gate.paused()?"Читання призупинено":speaking?currentTitle:"Читання ввімкнено • екран можна вимкнути").setContentIntent(open).setOngoing(true).setVisibility(Notification.VISIBILITY_PRIVATE).addAction(new Notification.Action.Builder(null,gate.paused()?"Продовжити":"Пауза",pause).build()).addAction(new Notification.Action.Builder(null,"Зупинити",stop).build());
         if(session!=null)builder.setStyle(new Notification.MediaStyle().setMediaSession(session.getSessionToken()).setShowActionsInCompactView(0,1));return builder.build();
     }
-    @Override public void onDestroy(){destroyed=true;running=false;new Config(this).prefs.edit().putBoolean("enabled",false).apply();main.removeCallbacksAndMessages(null);if(tts!=null){tts.stop();tts.shutdown();}if(wake!=null&&wake.isHeld())wake.release();if(audio!=null&&focus!=null)audio.abandonAudioFocusRequest(focus);if(session!=null){session.setActive(false);session.release();}stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
+    @Override public void onDestroy(){destroyed=true;running=false;if(new Config(this).enabled())recordServiceEvent("Службу завершено без натискання «Зупинити». Очікуємо відновлення Android.");main.removeCallbacksAndMessages(null);if(tts!=null){tts.stop();tts.shutdown();}if(wake!=null&&wake.isHeld())wake.release();if(audio!=null&&focus!=null)audio.abandonAudioFocusRequest(focus);if(session!=null){session.setActive(false);session.release();}stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();}
     @Override public IBinder onBind(Intent intent){return null;}
 }
