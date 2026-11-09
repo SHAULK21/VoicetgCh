@@ -71,9 +71,16 @@ public final class MainActivity extends Activity {
         diagnostics.setText(getString(R.string.notification_diagnostics,listenerAllowed()?"дозволено":"не дозволено",ReaderNotifications.connected()?"підключено":"немає з'єднання",when,c.prefs.getString("last_title","—"),c.prefs.getString("notification_status","Очікуємо нове сповіщення Telegram.")));
     }
     private void chooseNotificationTitle(){
-        java.util.List<String> detected=ReaderNotifications.activeTitles();Config c=new Config(this);
+        chooseNotificationTitle(true);
+    }
+    private void chooseNotificationTitle(boolean retry){
+        if(!listenerAllowed()){toast("Спочатку дозвольте доступ до сповіщень");startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));return;}
+        ReaderNotifications.Scan scan=ReaderNotifications.scan();
+        // After the process is restarted (common on Xiaomi/HyperOS) the listener may be unbound: rebind and retry once.
+        if(!scan.connected&&retry){ReaderNotifications.reconnect(this);toast("Підключаємось до сповіщень…");main.postDelayed(()->{if(!isFinishing())chooseNotificationTitle(false);},2500);return;}
+        java.util.List<String> detected=scan.titles;Config c=new Config(this);
         for(String key:new String[]{"last_title","last_raw_title"}){String title=c.prefs.getString(key,"");if(!title.trim().isEmpty()&&!detected.contains(title))detected.add(title);}
-        if(detected.isEmpty()){toast("Заголовків ще немає. Дозвольте доступ до сповіщень, дочекайтеся нового повідомлення Telegram та спробуйте ще раз.");return;}
+        if(detected.isEmpty()){new AlertDialog.Builder(this).setTitle("Канали не знайдено").setMessage(scan.explain()).setPositiveButton("OK",null).show();return;}
         new AlertDialog.Builder(this).setTitle("Оберіть канал. Особисті чати не додавайте.").setItems(detected.toArray(new String[0]),(dialog,index)->{
             String chosen=ReaderRules.normalizeTitle(detected.get(index));java.util.Set<String> allowed=ReaderRules.titles(titles.getText().toString());
             if(!allowed.contains(chosen)){String previous=titles.getText().toString().trim();titles.setText(previous.isEmpty()?chosen:previous+"\n"+chosen);}

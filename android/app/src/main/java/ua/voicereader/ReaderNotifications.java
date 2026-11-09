@@ -20,31 +20,53 @@ public final class ReaderNotifications extends NotificationListenerService {
     @Override public void onDestroy(){reconnectHandler.removeCallbacks(reconnectOnce);if(active==this)active=null;super.onDestroy();}
     static void seedBeforeReading(){if(active!=null)active.seedActive();}
     static void reconnect(Context context){try{requestRebind(new ComponentName(context,ReaderNotifications.class));}catch(SecurityException e){new Config(context).prefs.edit().putString("notification_status","Android не надав доступ. Увімкніть його в налаштуваннях сповіщень.").apply();}}
-    static List<String> activeTitles(){
-        Set<String> titles=new LinkedHashSet<>();if(active==null)return new ArrayList<>();
-        try {StatusBarNotification[] current=active.getActiveNotifications();if(current!=null)for(StatusBarNotification sbn:current){
-            if(!PACKAGES.contains(sbn.getPackageName())||(sbn.getNotification().flags&Notification.FLAG_GROUP_SUMMARY)!=0)continue;
-            Bundle extras=sbn.getNotification().extras;if(extras==null)continue;
-            String title=ReaderRules.selectTitle(string(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)),string(extras.getCharSequence(Notification.EXTRA_TITLE)),Collections.emptySet());
-            if(!title.trim().isEmpty())titles.add(title);
-        }}catch(SecurityException|IllegalStateException e){return new ArrayList<>();}
-        return new ArrayList<>(titles);
+    static boolean isTelegram(String pkg){return pkg!=null&&(PACKAGES.contains(pkg)||pkg.startsWith("org.telegram.messenger"));}
+    /** Result of scanning the status bar for the title picker, with a reason when nothing was found. */
+    static final class Scan {
+        final List<String> titles=new ArrayList<>();boolean connected,failed;int telegram,summaries,untitled;final Set<String> foreign=new TreeSet<>();
+        String explain(){
+            if(!connected)return "Немає з'єднання зі службою сповіщень. Запитано перепідключення — спробуйте ще раз за кілька секунд. Якщо не допоможе: вимкніть і знову увімкніть доступ до сповіщень для Voice Reader.";
+            if(failed)return "Android не дав прочитати сповіщення. Перепідключіть сповіщення.";
+            if(telegram==0){
+                String extra=foreign.isEmpty()?"":" Схожі застосунки: "+String.join(", ",foreign)+" — вони не підтримуються.";
+                return "У шторці немає сповіщень офіційного Telegram/Telegram X."+extra+" Не змахуйте сповіщення каналу, поки обираєте.";
+            }
+            return "Сповіщення Telegram є ("+telegram+"), але без назви чату (групових: "+summaries+", без заголовка: "+untitled+"). Введіть назву каналу вручну.";
+        }
+    }
+    static List<String> activeTitles(){return scan().titles;}
+    static Scan scan(){
+        Scan result=new Scan();ReaderNotifications listener=active;result.connected=listener!=null;if(listener==null)return result;
+        Set<String> titles=new LinkedHashSet<>();
+        try {StatusBarNotification[] current=listener.getActiveNotifications();if(current!=null)for(StatusBarNotification sbn:current){
+            String pkg=sbn.getPackageName();
+            if(!isTelegram(pkg)){if(pkg!=null&&(pkg.contains("telegram")||pkg.endsWith("gram")))result.foreign.add(pkg);continue;}
+            result.telegram++;
+            if((sbn.getNotification().flags&Notification.FLAG_GROUP_SUMMARY)!=0){result.summaries++;continue;}
+            Bundle extras=sbn.getNotification().extras;if(extras==null){result.untitled++;continue;}
+            String raw=string(extras.getCharSequence(Notification.EXTRA_TITLE));
+            if(raw.trim().isEmpty())raw=string(extras.getCharSequence(Notification.EXTRA_TITLE_BIG));
+            String title=ReaderRules.selectTitle(string(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE)),raw,Collections.emptySet());
+            if(title.trim().isEmpty())result.untitled++;else titles.add(title);
+        }}catch(SecurityException|IllegalStateException e){result.failed=true;return result;}
+        result.titles.addAll(titles);return result;
     }
     private void seedActive(){
         // Snapshot already visible notifications, rather than rejecting new deliveries
         // because their source timestamp predates the start of the speech service.
         try {
             StatusBarNotification[] notifications=getActiveNotifications();
-            if(notifications!=null)for(StatusBarNotification sbn:notifications)if(PACKAGES.contains(sbn.getPackageName()))process(sbn,true);
+            if(notifications!=null)for(StatusBarNotification sbn:notifications)if(isTelegram(sbn.getPackageName()))process(sbn,true);
         }catch(SecurityException|IllegalStateException e){new Config(this).prefs.edit().putString("notification_status","Не вдалося перевірити доступ. Перепідключіть сповіщення.").apply();}
     }
-    @Override public void onNotificationPosted(StatusBarNotification sbn){if(PACKAGES.contains(sbn.getPackageName()))process(sbn,false);}
-    @Override public void onNotificationRemoved(StatusBarNotification sbn){if(PACKAGES.contains(sbn.getPackageName()))history.forget(sbn.getPackageName()+"|"+sbn.getKey());}
+    @Override public void onNotificationPosted(StatusBarNotification sbn){if(isTelegram(sbn.getPackageName()))process(sbn,false);}
+    @Override public void onNotificationRemoved(StatusBarNotification sbn){if(isTelegram(sbn.getPackageName()))history.forget(sbn.getPackageName()+"|"+sbn.getKey());}
     private void process(StatusBarNotification sbn,boolean baseline){
         Config config=new Config(this);Notification n=sbn.getNotification();Bundle extras=n.extras;
         if(extras==null){if(!baseline)diagnostic(config, "У сповіщенні немає даних.");return;}
         String conversation=string(extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE));
         String raw=string(extras.getCharSequence(Notification.EXTRA_TITLE));
+        if(raw.trim().isEmpty())raw=string(extras.getCharSequence(Notification.EXTRA_TITLE_BIG));
         String title=ReaderRules.selectTitle(conversation,raw,config.titles());
         if((n.flags&Notification.FLAG_GROUP_SUMMARY)!=0)return;
         if(!baseline)config.prefs.edit().putString("last_title",title).putString("last_raw_title",raw).putLong("last_notification_at",System.currentTimeMillis()).apply();
