@@ -1,8 +1,12 @@
 name: Android APK
 on:
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Publish a signed release APK as a GitHub release'
+        type: boolean
+        default: false
   push:
-    tags: ['v*']
     paths: ['android/**', '.github/workflows/android.yml']
   pull_request:
     paths: ['android/**', '.github/workflows/android.yml']
@@ -11,8 +15,6 @@ permissions:
 jobs:
   apk:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -32,11 +34,51 @@ jobs:
           name: voice-reader-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-      - name: Attach APK to release
-        if: startsWith(github.ref, 'refs/tags/v')
+  release:
+    # Run manually: Actions → Android APK → Run workflow → enable "release".
+    if: github.event_name == 'workflow_dispatch' && inputs.release
+    needs: apk
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: '13114758'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+          log-accepted-android-sdk-licenses: false
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Decode signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ] || [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "::error::Add repository secrets ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD"; exit 1
+          fi
+          printf %s "$KEYSTORE_BASE64" | tr -d ' \n\r' | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+      - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          apk="voice-reader-${GITHUB_REF_NAME}.apk"
-          cp android/app/build/outputs/apk/debug/app-debug.apk "$apk"
-          gh release upload "$GITHUB_REF_NAME" "$apk" --clobber -R "$GITHUB_REPOSITORY" || gh release create "$GITHUB_REF_NAME" "$apk" --generate-notes -R "$GITHUB_REPOSITORY"
+          version=$(sed -n "s/.*versionName '\([^']*\)'.*/\1/p" android/app/build.gradle)
+          apk="voice-reader-$version.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$apk"
+          notes="android/release-notes/$version.md"
+          if gh release view "v$version" >/dev/null 2>&1; then
+            gh release upload "v$version" "$apk" --clobber
+          elif [ -f "$notes" ]; then
+            gh release create "v$version" "$apk" --target "$GITHUB_SHA" --title "Voice Reader $version" --notes-file "$notes"
+          else
+            gh release create "v$version" "$apk" --target "$GITHUB_SHA" --title "Voice Reader $version" --generate-notes
+          fi
