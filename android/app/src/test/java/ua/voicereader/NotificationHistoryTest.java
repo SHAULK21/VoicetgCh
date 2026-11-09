@@ -4,6 +4,19 @@ import static org.junit.Assert.*;
 import java.util.*;
 
 public class NotificationHistoryTest {
+    @Test public void mirroredPlainNotificationWithAnotherKeyIsSuppressedBriefly(){
+        NotificationHistory h=tracker();h.delivered("telegram","Новини","Звичайний текст","key1",100,false,1000);
+        assertTrue(h.isMirror("telegram","Новини","Звичайний  текст","key2",200,false,1100));
+        assertFalse(h.isMirror("telegram","Новини","Звичайний текст","key2",300,false,6001));
+        assertFalse(h.isMirror("telegram","Інший канал","Звичайний текст","key2",200,false,1100));
+    }
+    @Test public void separateStructuredMessagesWithDistinctTimesAreNotMirrors(){
+        NotificationHistory h=tracker();h.delivered("telegram","Новини","Тривога","key1",100,true,1000);
+        assertFalse(h.isMirror("telegram","Новини","Тривога","key2",200,true,1100));assertTrue(h.isMirror("telegram","Новини","Тривога","key2",100,true,1100));
+    }
+    @Test public void dismissalClearsMirrorGuardForNewDelivery(){
+        NotificationHistory h=tracker();h.delivered("telegram","Новини","Текст","key1",100,false,1000);h.forget("key1");assertFalse(h.isMirror("telegram","Новини","Текст","key2",200,false,1100));
+    }
     private NotificationHistory tracker(){return new NotificationHistory(200,40,100);}
     private String id(NotificationHistory h,String text,long time){return h.messageId("org.telegram.messenger","Новини",text,time,"");}
     @Test public void unswipedMessagingNotificationReadsOnlyNewMessage(){

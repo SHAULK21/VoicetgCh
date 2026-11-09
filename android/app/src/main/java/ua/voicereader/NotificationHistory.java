@@ -10,7 +10,9 @@ public final class NotificationHistory {
     private final int maxSnapshots,maxLines;
     private static final class Snapshot {final List<String> hashes;final boolean structured;Snapshot(List<String> hashes,boolean structured){this.hashes=hashes;this.structured=structured;}}
     private final LinkedHashMap<String,Snapshot> snapshots=new LinkedHashMap<>(16,.75f,true);
-    public NotificationHistory(int maxMessages,int maxSnapshots,int maxLines){recent=new ReaderRules.Recent(maxMessages);this.maxSnapshots=maxSnapshots;this.maxLines=maxLines;}
+    private static final class Mirror {final String scope;final long source,received;final boolean structured;Mirror(String scope,long source,long received,boolean structured){this.scope=scope;this.source=source;this.received=received;this.structured=structured;}}
+    private final LinkedHashMap<String,Mirror> mirrors=new LinkedHashMap<>();private final int maxMirrors;
+    public NotificationHistory(int maxMessages,int maxSnapshots,int maxLines){recent=new ReaderRules.Recent(maxMessages);this.maxSnapshots=maxSnapshots;this.maxLines=maxLines;maxMirrors=maxMessages;}
     public static String fingerprint(String value){
         try{byte[] bytes=MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));char[] out=new char[bytes.length*2];String hex="0123456789abcdef";for(int i=0;i<bytes.length;i++){out[i*2]=hex.charAt((bytes[i]&255)>>>4);out[i*2+1]=hex.charAt(bytes[i]&15);}return new String(out);}
         catch(java.security.NoSuchAlgorithmException e){throw new IllegalStateException(e);}
@@ -22,7 +24,18 @@ public final class NotificationHistory {
     public void retry(String id){recent.remove(id);}
     public void restore(Collection<String> ids){recent.restore(ids);}
     public Set<String> ids(){return recent.values();}
-    public void forget(String scope){snapshots.remove(fingerprint(scope));}
+    public void forget(String scope){String key=fingerprint(scope);snapshots.remove(key);mirrors.values().removeIf(value->value.scope.equals(key));}
+    private String mirrorKey(String app,String title,String text){return fingerprint(app+"|"+ReaderRules.normalizeTitle(title)+"|"+text.trim().replaceAll("[\\p{Z}\\s]+"," "));}
+    /** Copies from another notification key are common; never merge two known, distinct message timestamps. */
+    public boolean isMirror(String app,String title,String text,String scope,long source,boolean structured,long now){
+        Mirror old=mirrors.get(mirrorKey(app,title,text));
+        if(old==null||old.scope.equals(fingerprint(scope))||now<old.received||now-old.received>5000)return false;
+        return !(structured&&old.structured&&source>0&&old.source>0&&source!=old.source);
+    }
+    public void delivered(String app,String title,String text,String scope,long source,boolean structured,long now){
+        String key=mirrorKey(app,title,text);mirrors.remove(key);mirrors.put(key,new Mirror(fingerprint(scope),source,now,structured));
+        while(mirrors.size()>maxMirrors)mirrors.remove(mirrors.keySet().iterator().next());
+    }
     /** MessagingStyle has real per-message timestamps; other styles only have notification update times. */
     public boolean wasStructured(String scope){Snapshot previous=snapshots.get(fingerprint(scope));return previous!=null&&previous.structured;}
     /** Identify added rows in either chronological or newest-first InboxStyle lists. */
