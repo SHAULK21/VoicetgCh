@@ -1,2 +1,4 @@
 /target
 __pycache__/
+# language data is required for the build (the root .gitignore ignores data/)
+!/data/
