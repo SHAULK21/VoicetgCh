@@ -341,11 +341,18 @@ pub fn autostart_enabled() -> bool {
     autostart_value().is_some()
 }
 
+/// Ключ командной строки, с которым программа запускается из автозапуска.
+pub const AUTOSTART_ARG: &str = "--autostart";
+
+fn autostart_command() -> String {
+    format!("\"{}\" {AUTOSTART_ARG}", exe_path())
+}
+
 pub fn set_autostart(on: bool) {
     let (k, n) = (wide(RUN_KEY), wide(APP_NAME));
     unsafe {
         if on {
-            let v = wide(&format!("\"{}\"", exe_path()));
+            let v = wide(&autostart_command());
             RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), REG_SZ, v.as_ptr() as _, (v.len() * 2) as u32);
         } else {
             RegDeleteKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr());
@@ -353,10 +360,11 @@ pub fn set_autostart(on: bool) {
     }
 }
 
-/// Если автозапуск включён, а exe перенесли, обновить путь в записи Run.
+/// Если автозапуск включён, а exe перенесли (или запущена новая версия из другой папки),
+/// обновить путь в записи Run.
 pub fn refresh_autostart_path() {
     if let Some(v) = autostart_value()
-        && v.trim_matches('"') != exe_path()
+        && v != autostart_command()
     {
         set_autostart(true);
     }

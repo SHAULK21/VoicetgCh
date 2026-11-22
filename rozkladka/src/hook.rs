@@ -75,6 +75,12 @@ pub struct Buffer {
     pending: Option<(isize, u32)>,
     /// Последнее автоисправление — чтобы Pause мог его отменить.
     pub undo: Option<AutoUndo>,
+    /// Активна виртуальная раскладка (язык без установленной раскладки, например русский):
+    /// (её hkl, настоящая раскладка Windows, поверх которой она работает). Каждая буквенная
+    /// клавиша подменяется её символом, пока пользователь не переключит раскладку Windows.
+    pub virt: Option<(isize, isize)>,
+    /// Клавиши, чьё нажатие мы подменили, — их отпускание тоже глотаем.
+    virt_down: Vec<u16>,
 }
 
 pub struct AutoUndo {
@@ -89,6 +95,22 @@ pub struct AutoUndo {
 }
 
 impl Buffer {
+    /// Перейти на раскладку `hkl`: настоящую — попросить Windows переключиться,
+    /// виртуальную — включить подмену клавиш поверх текущей раскладки Windows.
+    pub fn switch_to(&mut self, hkl: isize) {
+        if is_virtual(hkl) {
+            let phys = match self.virt {
+                Some((_, phys)) => phys,
+                None => foreground_layout().1,
+            };
+            self.virt = Some((hkl, phys));
+        } else {
+            self.virt = None;
+            sys::activate_layout(hkl);
+            self.set_pending(hkl);
+        }
+    }
+
     /// Запомнить запрошенное переключение раскладки (клавиши сразу после него считаются в `hkl`).
     pub fn set_pending(&mut self, hkl: isize) {
         if is_virtual(hkl) {
@@ -117,6 +139,8 @@ pub static BUF: Mutex<Buffer> = Mutex::new(Buffer {
     pause_swallowed: false,
     pending: None,
     undo: None,
+    virt: None,
+    virt_down: Vec::new(),
 });
 
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
@@ -233,7 +257,12 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         _ => {}
     }
 
+    let scan = k.scanCode as u16;
     if !down {
+        if let Some(i) = b.virt_down.iter().position(|&s| s == scan) {
+            b.virt_down.swap_remove(i);
+            return true;
+        }
         return false;
     }
     b.shift_clean = false;
@@ -241,6 +270,13 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
 
     // ---- обычные клавиши: запоминаем набранное --------------------------------------------
     let (fg, hkl) = foreground_layout();
+    // Пользователь переключил раскладку Windows — виртуальная раскладка выключается.
+    if let Some((_, phys)) = b.virt
+        && phys != hkl
+        && b.pending.is_none()
+    {
+        b.virt = None;
+    }
     if fg != b.last_hwnd {
         b.clear();
         b.last_hwnd = fg;
@@ -257,8 +293,27 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         }
         None => hkl,
     };
-    let scan = k.scanCode as u16;
     let extended = k.flags & LLKHF_EXTENDED != 0;
+    // Виртуальная раскладка: глотаем клавишу и печатаем её символ.
+    if let Some((v, _)) = b.virt
+        && !extended
+        && is_char_scan(scan)
+    {
+        let key = Key { scan, shift: pressed(VK_SHIFT), caps: b.caps, hkl: v };
+        let c = LAYOUTS.read().ok().and_then(|l| l.iter().find(|i| i.hkl == v).and_then(|i| i.render(&key)));
+        if let Some(c) = c {
+            sys::type_text(c.encode_utf8(&mut [0; 4]));
+            b.keys.push(key);
+            if b.keys.len() > MAX_KEYS {
+                b.keys.drain(..MAX_KEYS / 2);
+            }
+            b.version += 1;
+            if !b.virt_down.contains(&scan) {
+                b.virt_down.push(scan);
+            }
+            return true;
+        }
+    }
     if scan == SCAN_SPACE && !extended && try_autocorrect(&mut b) {
         return true; // пробел перепечатывается вместе с исправлением
     }
@@ -374,16 +429,11 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
     sys::type_text(&format!("{out} "));
     // Если целевая раскладка не установлена, переключать нечего: клавиши так и остаются
     // набранными в раскладке T, а следующие слова будут так же перепечатываться.
-    let real = !is_virtual(g_hkl);
-    if real {
-        sys::activate_layout(g_hkl);
-        for k in &mut b.keys[start..n] {
-            k.hkl = g_hkl;
-        }
-        b.set_pending(g_hkl);
+    for k in &mut b.keys[start..n] {
+        k.hkl = g_hkl;
     }
-    let space_hkl = if real { g_hkl } else { t_hkl };
-    b.keys.push(Key { scan: SCAN_SPACE, shift: false, caps: b.caps, hkl: space_hkl });
+    b.switch_to(g_hkl);
+    b.keys.push(Key { scan: SCAN_SPACE, shift: false, caps: b.caps, hkl: g_hkl });
     b.version += 1;
     b.undo = Some(AutoUndo { version: b.version, start, end: n, from: t_hkl, word: t_norm });
     true

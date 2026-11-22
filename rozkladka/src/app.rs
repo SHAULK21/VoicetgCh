@@ -53,7 +53,9 @@ Alt+Shift+Pause — строчные → ПРОПИСНЫЕ → Каждое С�
 Ctrl+Shift+Pause — транслитерация (Привіт ↔ Pryvit)\n\n\
 Без выделения Alt/Ctrl+Shift-команды работают с последним словом.\n\
 Работает с любыми установленными раскладками Windows, а в английский, украинский\n\
-и русский переводит, даже если такой раскладки в Windows нет.\n\
+и русский переводит, даже если такой раскладки в Windows нет: тогда включается\n\
+виртуальная раскладка (на иконке «РУС»), и клавиши сразу печатают русские буквы,\n\
+пока вы не переключите раскладку Windows.\n\
 Двойной клик по иконке в трее — включить / выключить.";
 
 #[derive(PartialEq)]
@@ -264,14 +266,13 @@ fn convert_buffer(phrase: bool) {
             for k in &mut b.keys[u.start..n] {
                 k.hkl = u.from;
             }
-            b.set_pending(u.from);
+            b.switch_to(u.from);
             if let Ok(mut ex) = hook::EXCEPTIONS.lock() {
                 ex.get_or_insert_with(Default::default).insert(u.word.clone());
             }
             sys::add_exception(&u.word);
             drop(b);
             sys::backspaces(n - u.start);
-            sys::activate_layout(u.from);
             sys::type_text(&out);
             return;
         }
@@ -304,12 +305,11 @@ fn convert_buffer(phrase: bool) {
         for k in &mut b.keys[start..n] {
             k.hkl = target;
         }
-        b.set_pending(target);
-        (n - start, out, target)
+        b.switch_to(target);
+        (n - start, out)
     };
-    let (erase, out, target) = job;
+    let (erase, out) = job;
     sys::backspaces(erase);
-    sys::activate_layout(target);
     sys::type_text(&out);
 }
 
@@ -373,8 +373,10 @@ fn selection_action(action: Action, allow_fallback: bool) {
     {
         sys::set_clipboard_text(hwnd, &out);
         sys::tap_combo(VK_LSHIFT, VK_INSERT); // вставить
-        if let Some(h) = layout {
-            sys::activate_layout(h);
+        if let Some(h) = layout
+            && let Ok(mut b) = hook::BUF.lock()
+        {
+            b.switch_to(h);
         }
         // Оставить результат выделенным, чтобы горячую клавишу можно было нажать ещё раз.
         let n = out.chars().filter(|&c| c != '\r').count();
@@ -545,8 +547,18 @@ fn tray_data(hkl: isize, enabled: bool) -> NOTIFYICONDATAW {
     nid
 }
 
+/// Раскладка, которую показывать в трее: виртуальная (например, РУС без установленной
+/// русской раскладки), если она сейчас включена поверх текущей раскладки Windows.
+fn effective_layout(hkl: isize) -> isize {
+    match hook::BUF.lock().ok().and_then(|b| b.virt) {
+        Some((v, phys)) if phys == hkl => v,
+        _ => hkl,
+    }
+}
+
 fn update_tray(add: bool) {
     let (_, hkl) = hook::foreground_layout();
+    let hkl = effective_layout(hkl);
     let hkl = if hkl == 0 { APP.with(|a| a.borrow().shown.0) } else { hkl };
     let enabled = hook::ENABLED.load(Ordering::Relaxed);
     let nid = tray_data(hkl, enabled);
@@ -587,13 +599,14 @@ fn on_timer() {
     unsafe { GetWindowThreadProcessId(fg as HWND, &mut pid) };
     let app = sys::process_name(pid).filter(|n| n != "explorer.exe" && n != "rozkladka.exe");
     let enabled = hook::ENABLED.load(Ordering::Relaxed);
+    let shown_hkl = effective_layout(hkl);
     let changed = APP.with(|a| {
         let mut a = a.borrow_mut();
         a.last_used.insert(hkl, unsafe { GetTickCount() });
         if app.is_some() {
             a.last_app = app;
         }
-        a.shown != (hkl, enabled, auto_on())
+        a.shown != (shown_hkl, enabled, auto_on())
     });
     if changed {
         update_tray(false);
@@ -744,16 +757,40 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
+/// Закрыть уже запущенную копию (например, старую версию из автозапуска), чтобы работала эта.
+fn close_running_copy() -> bool {
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject};
+    unsafe {
+        let class = wide("RozkladkaWindow");
+        let old = FindWindowW(class.as_ptr(), null());
+        if old.is_null() {
+            return false;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(old, &mut pid);
+        let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+        PostMessageW(old, WM_CLOSE, 0, 0);
+        if process.is_null() {
+            sleep(Duration::from_millis(1500));
+            return FindWindowW(class.as_ptr(), null()).is_null();
+        }
+        let done = WaitForSingleObject(process, 5000) == WAIT_OBJECT_0;
+        CloseHandle(process);
+        done
+    }
+}
+
 pub fn run() {
     unsafe {
         SetProcessDPIAware();
 
         let mutex_name = wide("Local\\Rozkladka-single-instance");
         let _mutex = CreateMutexW(null(), 0, mutex_name.as_ptr());
-        if GetLastError() == ERROR_ALREADY_EXISTS {
+        if GetLastError() == ERROR_ALREADY_EXISTS && !close_running_copy() {
             sys::message_box("Раскладка уже запущена — иконка в трее (возле часов).", APP_TITLE, MB_OK | MB_ICONINFORMATION);
             return;
         }
+        let from_autostart = std::env::args().any(|a| a == sys::AUTOSTART_ARG);
 
         // Настройки
         hook::ENABLED.store(sys::reg_get_dword("Enabled").unwrap_or(1) != 0, Ordering::Relaxed);
@@ -811,10 +848,19 @@ pub fn run() {
         hook::start(hwnd);
         SetTimer(hwnd, TIMER_ID, 250, None);
 
-        if first_run {
+        if first_run || !from_autostart {
+            let mode = match hook::AUTO_MODE.load(Ordering::Relaxed) {
+                AUTO_OFF => "выключено",
+                AUTO_ALL => "между всеми языками",
+                0x122 => "всё на украинский",
+                0x119 => "всё на русский",
+                _ => "всё на английский",
+            };
             balloon(
                 "Раскладка запущена",
-                "Слова в неправильной раскладке исправляются сами после пробела.\nPause — исправить/отменить. Правый клик по иконке — настройки и целевой язык.",
+                &format!(
+                    "Исправление на лету: {mode}.\nPause — исправить/отменить. Правый клик по иконке — настройки и целевой язык."
+                ),
             );
         }
 
