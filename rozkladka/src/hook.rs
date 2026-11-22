@@ -91,6 +91,9 @@ pub struct AutoUndo {
 impl Buffer {
     /// Запомнить запрошенное переключение раскладки (клавиши сразу после него считаются в `hkl`).
     pub fn set_pending(&mut self, hkl: isize) {
+        if is_virtual(hkl) {
+            return;
+        }
         self.pending = Some((hkl, unsafe { GetTickCount() }));
     }
 
@@ -328,10 +331,6 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
     for l in layouts.iter() {
         let Some(lang) = l.lang else { continue };
         if l.hkl == t_hkl || lang == t_lang || target.is_some_and(|p| p != l.primary) {
-            continue;
-        }
-        // Неустановленные раскладки — только когда язык выбран целевым явно.
-        if is_virtual(l.hkl) && target.is_none() {
             continue;
         }
         // Достаточно одной раскладки на язык.

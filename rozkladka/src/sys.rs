@@ -129,6 +129,9 @@ pub fn type_text(s: &str) {
 
 /// Попросить активное окно переключиться на раскладку `hkl`.
 pub fn activate_layout(hkl: isize) {
+    if crate::layouts::is_virtual(hkl) {
+        return; // раскладка не установлена — переключать нечего
+    }
     unsafe {
         let fg = GetForegroundWindow();
         if !fg.is_null() {

@@ -20,7 +20,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::convert;
 use crate::hook::{self, AUTO_ALL, AUTO_OFF, Action, WM_APP_ACTION};
 use crate::layouts;
-use crate::keymap::{KeyMap, WinMap};
+use crate::keymap::{Builtin, KeyMap, WinMap};
 use crate::sys::{self, wide};
 
 const WM_APP_TRAY: u32 = WM_APP + 2;
@@ -52,7 +52,8 @@ Alt+Pause — иНВЕРСИЯ рЕГИСТРА (забытый CapsLock)\n\
 Alt+Shift+Pause — строчные → ПРОПИСНЫЕ → Каждое Слово\n\
 Ctrl+Shift+Pause — транслитерация (Привіт ↔ Pryvit)\n\n\
 Без выделения Alt/Ctrl+Shift-команды работают с последним словом.\n\
-Работает с любыми установленными раскладками Windows.\n\
+Работает с любыми установленными раскладками Windows, а в английский, украинский\n\
+и русский переводит, даже если такой раскладки в Windows нет.\n\
 Двойной клик по иконке в трее — включить / выключить.";
 
 #[derive(PartialEq)]
@@ -110,9 +111,26 @@ fn primary_lang(hkl: isize) -> u16 {
 // Логика раскладок
 // =============================================================================================
 
+/// Таблица символов раскладки: настоящая из Windows или встроенная для неустановленной.
+fn keymap_for(hkl: isize) -> Box<dyn KeyMap> {
+    if layouts::is_virtual(hkl) {
+        Box::new(Builtin::for_primary_lang(primary_lang(hkl)).unwrap_or_else(Builtin::en))
+    } else {
+        Box::new(WinMap::new(hkl))
+    }
+}
+
+/// Установленные раскладки + виртуальные EN / UK / RU, которых нет в Windows
+/// (в них нельзя переключиться, но можно перепечатать текст их буквами).
+fn all_layouts() -> Vec<isize> {
+    let mut list = sys::installed_layouts();
+    list.extend(layouts::virtual_hkls(&list));
+    list
+}
+
 /// Грубо «алфавит» раскладки: 1 — латиница, 2 — кириллица, иначе — сам символ.
 fn script_of(hkl: isize) -> u32 {
-    match WinMap::new(hkl).render(0x1E, false, false) {
+    match keymap_for(hkl).render(0x1E, false, false) {
         Some(c) if c.is_ascii_alphabetic() => 1,
         Some(c) if ('\u{0400}'..='\u{04FF}').contains(&c) => 2,
         Some(c) => c as u32,
@@ -122,9 +140,10 @@ fn script_of(hkl: isize) -> u32 {
 
 /// Порядок перебора раскладок при конвертации текста, набранного в `src`:
 /// сначала последняя использованная раскладка *другого* алфавита (латиница <-> кириллица),
-/// затем остальные установленные и в конце снова `src`.
+/// затем остальные (в том числе неустановленные EN / UK / RU) и в конце снова `src`.
+/// Если в меню выбран целевой язык («Всё на русский»), он идёт первым.
 fn build_seq(src: isize) -> Vec<isize> {
-    let list = sys::installed_layouts();
+    let list = all_layouts();
     let others: Vec<isize> = list.iter().copied().filter(|&h| h != src).collect();
     if others.is_empty() {
         return Vec::new();
@@ -139,7 +158,12 @@ fn build_seq(src: isize) -> Vec<isize> {
             }
         }
     }
-    let preferred = best.map(|b| b.0).unwrap_or(others[0]);
+    let mode = hook::AUTO_MODE.load(Ordering::Relaxed);
+    let target = (mode & 0x100 != 0).then_some((mode & 0x3FF) as u16);
+    let preferred = target
+        .and_then(|p| others.iter().copied().find(|&h| primary_lang(h) == p))
+        .or(best.map(|b| b.0))
+        .unwrap_or(others[0]);
     let mut seq = vec![preferred];
     seq.extend(others.iter().copied().filter(|&h| h != preferred));
     seq.push(src);
@@ -150,8 +174,8 @@ fn build_seq(src: isize) -> Vec<isize> {
 fn detect_source(text: &str) -> isize {
     let (_, fg_hkl) = hook::foreground_layout();
     let mut best = (0usize, false, 0u32, fg_hkl);
-    for h in sys::installed_layouts() {
-        let score = convert::layout_score(text, &WinMap::new(h));
+    for h in all_layouts() {
+        let score = convert::layout_score(text, keymap_for(h).as_ref());
         let cand = (score, h == fg_hkl, last_used(h), h);
         if (cand.0, cand.1, cand.2) > (best.0, best.1, best.2) {
             best = cand;
@@ -231,7 +255,7 @@ fn convert_buffer(phrase: bool) {
             && u.version == b.version
             && n == u.end + 1
         {
-            let from = WinMap::new(u.from);
+            let from = keymap_for(u.from);
             let mut out: String = b.keys[u.start..u.end]
                 .iter()
                 .map(|k| from.render(k.scan, k.shift, k.caps).unwrap_or('?'))
@@ -268,12 +292,12 @@ fn convert_buffer(phrase: bool) {
         let key = SessionKey::Buffer { version: b.version, start, len: n };
         let src = b.keys[end - 1].hkl;
         let Some((_, target)) = next_layouts(key, || src) else { return };
-        let to = WinMap::new(target);
+        let to = keymap_for(target);
         let mut out = String::new();
         for k in &b.keys[start..n] {
             let c = to
                 .render(k.scan, k.shift, k.caps)
-                .or_else(|| WinMap::new(k.hkl).render(k.scan, k.shift, k.caps))
+                .or_else(|| keymap_for(k.hkl).render(k.scan, k.shift, k.caps))
                 .unwrap_or('?');
             out.push(c);
         }
@@ -293,7 +317,7 @@ fn transform(action: Action, text: &str) -> Option<(String, Option<isize>)> {
     match action {
         Action::ConvertSelection => {
             let (from, to) = next_layouts(SessionKey::Selection(text.to_string()), || detect_source(text))?;
-            let out = convert::convert_text(text, &WinMap::new(from), &WinMap::new(to));
+            let out = convert::convert_text(text, keymap_for(from).as_ref(), keymap_for(to).as_ref());
             set_session_key(SessionKey::Selection(out.clone()));
             Some((out, Some(to)))
         }
