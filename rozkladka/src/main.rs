@@ -1,5 +1,6 @@
 //! Rozkladka — a tiny portable Punto Switcher-like layout fixer for Windows.
 //!
+//! On the fly: a word typed in the wrong layout is fixed after Space (Pause undoes it).
 //! Pause              — fix the last typed word (press again to try the next layout)
 //! Double Shift       — same as Pause (for laptops without a Pause key)
 //! Ctrl+Pause         — fix the whole last typed phrase
@@ -10,6 +11,7 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+mod auto;
 mod convert;
 mod keymap;
 
@@ -17,6 +19,8 @@ mod keymap;
 mod app;
 #[cfg(windows)]
 mod hook;
+#[cfg(windows)]
+mod layouts;
 #[cfg(windows)]
 mod sys;
 

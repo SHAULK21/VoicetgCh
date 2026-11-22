@@ -4,16 +4,22 @@
 //! detects hotkeys; the actual work is posted to the main window so the hook
 //! callback stays fast.
 
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::{Mutex, RwLock};
 
 use windows_sys::Win32::Foundation::*;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_HIGHEST};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::auto::{self, Lang};
 use crate::keymap::{SCAN_SPACE, is_char_scan};
+use crate::layouts::LAYOUTS;
+use crate::sys;
 
 pub const WM_APP_ACTION: u32 = WM_APP + 1;
 const MAX_KEYS: usize = 300;
@@ -64,9 +70,29 @@ pub struct Buffer {
     shift_clean: bool,
     last_shift_tap: u32,
     pause_swallowed: bool,
+    /// Layout we just asked the foreground window to switch to (it may not have switched yet).
+    pending: Option<(isize, u32)>,
+    /// The last automatic correction, so that Pause can undo it.
+    pub undo: Option<AutoUndo>,
+}
+
+pub struct AutoUndo {
+    /// Buffer version right after the correction (any further typing invalidates the undo).
+    pub version: u64,
+    /// Corrected keys are `keys[start..end]`, followed by the space at `end`.
+    pub start: usize,
+    pub end: usize,
+    pub from: isize,
+    /// The word as originally typed (normalized) — added to the exceptions on undo.
+    pub word: String,
 }
 
 impl Buffer {
+    /// Remember that we requested a layout switch (keys typed right after still use `hkl`).
+    pub fn set_pending(&mut self, hkl: isize) {
+        self.pending = Some((hkl, unsafe { GetTickCount() }));
+    }
+
     fn clear(&mut self) {
         if !self.keys.is_empty() {
             self.keys.clear();
@@ -85,10 +111,24 @@ pub static BUF: Mutex<Buffer> = Mutex::new(Buffer {
     shift_clean: false,
     last_shift_tap: 0,
     pause_swallowed: false,
+    pending: None,
+    undo: None,
 });
 
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
 pub static DOUBLE_SHIFT: AtomicBool = AtomicBool::new(true);
+/// On-the-fly correction: 0 = off, 1 = between all languages, 0x100 | primary LANGID = into one language.
+pub static AUTO_MODE: AtomicU32 = AtomicU32::new(1);
+/// Preferred Cyrillic language (primary LANGID) when Ukrainian and Russian both fit.
+pub static AUTO_PREF: AtomicU32 = AtomicU32::new(0x22);
+/// Words the user rejected (undid with Pause) — never corrected automatically again.
+pub static EXCEPTIONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+/// Programs (lower-case exe names) where on-the-fly correction is disabled.
+pub static EXCLUDED_APPS: RwLock<Vec<String>> = RwLock::new(Vec::new());
+pub static EXCLUDED_GEN: AtomicU32 = AtomicU32::new(0);
+
+pub const AUTO_OFF: u32 = 0;
+pub const AUTO_ALL: u32 = 1;
 static MAIN_HWND: AtomicIsize = AtomicIsize::new(0);
 
 pub fn clear_buffer() {
@@ -205,8 +245,19 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         b.clear();
         return false;
     }
+    let hkl = match b.pending {
+        Some((p, t)) if p != hkl && unsafe { GetTickCount() }.wrapping_sub(t) < 1500 => p,
+        Some(_) => {
+            b.pending = None;
+            hkl
+        }
+        None => hkl,
+    };
     let scan = k.scanCode as u16;
     let extended = k.flags & LLKHF_EXTENDED != 0;
+    if scan == SCAN_SPACE && !extended && try_autocorrect(&mut b) {
+        return true; // the space is retyped by the correction
+    }
     if vk == VK_BACK {
         b.keys.pop();
         b.version += 1;
@@ -222,6 +273,111 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         b.clear();
     }
     false
+}
+
+fn excluded_app(fg: isize) -> bool {
+    thread_local! {
+        static CACHE: RefCell<(u32, HashMap<u32, bool>)> = RefCell::new((u32::MAX, HashMap::new()));
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(fg as HWND, &mut pid) };
+    let generation = EXCLUDED_GEN.load(Ordering::Relaxed);
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0 != generation {
+            *c = (generation, HashMap::new());
+        }
+        *c.1.entry(pid).or_insert_with(|| {
+            let name = sys::process_name(pid).unwrap_or_default();
+            EXCLUDED_APPS.read().map(|l| l.contains(&name)).unwrap_or(false)
+        })
+    })
+}
+
+/// Called when Space is pressed: if the word before it was typed in the wrong layout,
+/// erase it, type it in the right layout and switch the layout. Returns true if corrected.
+fn try_autocorrect(b: &mut Buffer) -> bool {
+    let mode = AUTO_MODE.load(Ordering::Relaxed);
+    let n = b.keys.len();
+    if mode == AUTO_OFF || n == 0 || b.keys[n - 1].is_space() {
+        return false;
+    }
+    let mut s = n;
+    while s > 0 && !b.keys[s - 1].is_space() {
+        s -= 1;
+    }
+    let t_hkl = b.keys[n - 1].hkl;
+    if b.keys[s..n].iter().any(|k| k.hkl != t_hkl) || excluded_app(b.last_hwnd) {
+        return false;
+    }
+    let Ok(layouts) = LAYOUTS.read() else { return false };
+    let Some(tl) = layouts.iter().find(|l| l.hkl == t_hkl) else { return false };
+    let Some(t_lang) = tl.lang else { return false };
+    let Some(t_text) = tl.render_keys(&b.keys[s..n]) else { return false };
+    let t_norm = auto::normalize(t_lang, &t_text).trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+    if let Ok(ex) = EXCEPTIONS.lock()
+        && ex.as_ref().is_some_and(|e| e.contains(&t_norm))
+    {
+        return false;
+    }
+
+    let target = (mode & 0x100 != 0).then_some((mode & 0x3FF) as u16);
+    let mut cand_layouts = Vec::new();
+    let mut cand_texts = Vec::new();
+    for l in layouts.iter() {
+        let Some(lang) = l.lang else { continue };
+        if l.hkl == t_hkl || lang == t_lang || target.is_some_and(|p| p != l.primary) {
+            continue;
+        }
+        // One layout per language is enough.
+        if cand_layouts.iter().any(|c: &&crate::layouts::LayoutInfo| c.lang == Some(lang)) {
+            continue;
+        }
+        if let Some(t) = l.render_keys(&b.keys[s..n]) {
+            cand_layouts.push(l);
+            cand_texts.push((lang, t));
+        }
+    }
+    let pairs: Vec<(Lang, &str)> = cand_texts.iter().map(|(l, t)| (*l, t.as_str())).collect();
+    let pref = Lang::from_primary(AUTO_PREF.load(Ordering::Relaxed) as u16);
+    let Some(i) = auto::decide(t_lang, &t_text, &pairs, pref, target.is_some()) else { return false };
+    let g = cand_layouts[i];
+    let g_lang = cand_texts[i].0;
+
+    // Also fix one-letter words typed just before in the same wrong layout ("z ns" -> "я ти").
+    let mut start = s;
+    for _ in 0..3 {
+        let mut e = start;
+        while e > 0 && b.keys[e - 1].is_space() {
+            e -= 1;
+        }
+        if e == start || e == 0 || (e >= 2 && !b.keys[e - 2].is_space()) {
+            break;
+        }
+        let k = b.keys[e - 1];
+        let (Some(tc), Some(gc)) = (tl.render(&k), g.render(&k)) else { break };
+        if k.hkl != t_hkl || !auto::fix_single_letter(t_lang, tc, g_lang, gc) {
+            break;
+        }
+        start = e - 1;
+    }
+
+    let Some(out) = g.render_keys(&b.keys[start..n]) else { return false };
+    let g_hkl = g.hkl;
+    drop(layouts);
+
+    sys::backspaces(n - start);
+    sys::type_text(&format!("{out} "));
+    sys::activate_layout(g_hkl);
+
+    for k in &mut b.keys[start..n] {
+        k.hkl = g_hkl;
+    }
+    b.keys.push(Key { scan: SCAN_SPACE, shift: false, caps: b.caps, hkl: g_hkl });
+    b.version += 1;
+    b.set_pending(g_hkl);
+    b.undo = Some(AutoUndo { version: b.version, start, end: n, from: t_hkl, word: t_norm });
+    true
 }
 
 unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {

@@ -17,8 +17,10 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+use crate::auto;
 use crate::convert;
-use crate::hook::{self, Action, WM_APP_ACTION};
+use crate::hook::{self, AUTO_ALL, AUTO_OFF, Action, WM_APP_ACTION};
+use crate::layouts;
 use crate::keymap::{KeyMap, WinMap};
 use crate::sys::{self, wide};
 
@@ -30,10 +32,19 @@ const ID_DOUBLE_SHIFT: usize = 2;
 const ID_AUTOSTART: usize = 3;
 const ID_HELP: usize = 4;
 const ID_EXIT: usize = 5;
+const ID_EXCLUDE_APP: usize = 6;
+const ID_AUTO_OFF: usize = 10;
+const ID_AUTO_ALL: usize = 11;
+/// ID_AUTO_TARGET + primary LANGID = "everything into this language".
+const ID_AUTO_TARGET: usize = 0x1000;
 
 const APP_TITLE: &str = "Rozkladka";
 
 const HELP: &str = "Rozkladka — исправление текста, набранного не в той раскладке.\n\n\
+НА ЛЕТУ (меню → «Исправлять на лету»): слово, набранное не в той раскладке, исправляется\n\
+само после пробела, и раскладка переключается. Можно выбрать целевой язык\n\
+(«Всё в Українську» и т.п.) или режим «между всеми языками».\n\
+Если исправило зря — сразу нажмите Pause: слово вернётся и запомнится как исключение.\n\n\
 Pause — исправить последнее слово\n      (нажмите ещё раз — следующая раскладка: EN → UA → RU …)\n\
 Двойной Shift — то же самое (для ноутбуков без Pause)\n\
 Ctrl+Pause (Break) — исправить всю последнюю фразу\n\
@@ -61,23 +72,26 @@ struct Session {
 
 struct App {
     hwnd: HWND,
-    shown: (isize, bool),
-    icons: HashMap<(u16, bool), HICON>,
+    shown: (isize, bool, bool),
+    icons: HashMap<(u16, bool, bool), HICON>,
     last_used: HashMap<isize, u32>,
     session: Option<Session>,
     taskbar_created: u32,
     tray_added: bool,
+    /// Last foreground program (for "don't correct in this program").
+    last_app: Option<String>,
 }
 
 thread_local! {
     static APP: RefCell<App> = RefCell::new(App {
         hwnd: null_mut(),
-        shown: (0, true),
+        shown: (0, true, false),
         icons: HashMap::new(),
         last_used: HashMap::new(),
         session: None,
         taskbar_created: 0,
         tray_added: false,
+        last_app: None,
     });
 }
 
@@ -213,6 +227,31 @@ fn convert_buffer(phrase: bool) {
     let job = {
         let Ok(mut b) = hook::BUF.lock() else { return };
         let n = b.keys.len();
+        // Pause right after an automatic correction = undo it and remember the word.
+        if let Some(u) = b.undo.take()
+            && u.version == b.version
+            && n == u.end + 1
+        {
+            let from = WinMap::new(u.from);
+            let mut out: String = b.keys[u.start..u.end]
+                .iter()
+                .map(|k| from.render(k.scan, k.shift, k.caps).unwrap_or('?'))
+                .collect();
+            out.push(' ');
+            for k in &mut b.keys[u.start..n] {
+                k.hkl = u.from;
+            }
+            b.set_pending(u.from);
+            if let Ok(mut ex) = hook::EXCEPTIONS.lock() {
+                ex.get_or_insert_with(Default::default).insert(u.word.clone());
+            }
+            sys::add_exception(&u.word);
+            drop(b);
+            sys::backspaces(n - u.start);
+            sys::activate_layout(u.from);
+            sys::type_text(&out);
+            return;
+        }
         let mut end = n;
         while end > 0 && b.keys[end - 1].is_space() {
             end -= 1;
@@ -242,6 +281,7 @@ fn convert_buffer(phrase: bool) {
         for k in &mut b.keys[start..n] {
             k.hkl = target;
         }
+        b.set_pending(target);
         (n - start, out, target)
     };
     let (erase, out, target) = job;
@@ -358,7 +398,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> u32 {
     r as u32 | (g as u32) << 8 | (b as u32) << 16
 }
 
-fn make_icon(label: &str, bg: u32, fg: u32) -> HICON {
+fn make_icon(label: &str, bg: u32, fg: u32, auto_bar: bool) -> HICON {
     unsafe {
         let size = GetSystemMetrics(SM_CXSMICON).max(16);
         let screen = GetDC(null_mut());
@@ -377,6 +417,14 @@ fn make_icon(label: &str, bg: u32, fg: u32) -> HICON {
         let brush = CreateSolidBrush(bg);
         FillRect(dc, &rect, brush);
         DeleteObject(brush);
+        if auto_bar {
+            // Green stripe at the bottom = on-the-fly correction is on.
+            let h = (size / 8).max(2);
+            let bar = RECT { left: 0, top: size - h, right: size, bottom: size };
+            let brush = CreateSolidBrush(rgb(40, 200, 90));
+            FillRect(dc, &bar, brush);
+            DeleteObject(brush);
+        }
 
         let face = wide("Segoe UI");
         let height = if label.chars().count() > 2 { size * 9 / 16 } else { size * 11 / 16 };
@@ -413,8 +461,8 @@ fn make_icon(label: &str, bg: u32, fg: u32) -> HICON {
     }
 }
 
-fn icon_for(hkl: isize, enabled: bool) -> HICON {
-    let key = ((hkl as usize & 0xFFFF) as u16, enabled);
+fn icon_for(hkl: isize, enabled: bool, auto_on: bool) -> HICON {
+    let key = ((hkl as usize & 0xFFFF) as u16, enabled, auto_on);
     if let Some(i) = APP.with(|a| a.borrow().icons.get(&key).copied()) {
         return i;
     }
@@ -429,7 +477,7 @@ fn icon_for(hkl: isize, enabled: bool) -> HICON {
             _ => (rgb(70, 70, 70), rgb(255, 255, 255)),
         }
     };
-    let icon = make_icon(&label, bg, fg);
+    let icon = make_icon(&label, bg, fg, auto_on && enabled);
     APP.with(|a| a.borrow_mut().icons.insert(key, icon));
     icon
 }
@@ -440,6 +488,10 @@ fn copy_wstr(dst: &mut [u16], s: &str) {
     dst[w.len()] = 0;
 }
 
+fn auto_on() -> bool {
+    hook::AUTO_MODE.load(Ordering::Relaxed) != AUTO_OFF
+}
+
 fn tray_data(hkl: isize, enabled: bool) -> NOTIFYICONDATAW {
     let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
     nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
@@ -447,8 +499,15 @@ fn tray_data(hkl: isize, enabled: bool) -> NOTIFYICONDATAW {
     nid.uID = 1;
     nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
     nid.uCallbackMessage = WM_APP_TRAY;
-    nid.hIcon = icon_for(hkl, enabled);
-    let tip = format!("{APP_TITLE} — {}{}", lang_label(hkl), if enabled { "" } else { " (выключено)" });
+    nid.hIcon = icon_for(hkl, enabled, auto_on());
+    let state = if !enabled {
+        " (выключено)"
+    } else if auto_on() {
+        ", исправление на лету"
+    } else {
+        ""
+    };
+    let tip = format!("{APP_TITLE} — {}{state}", lang_label(hkl));
     copy_wstr(&mut nid.szTip, &tip);
     nid
 }
@@ -461,7 +520,7 @@ fn update_tray(add: bool) {
     let ok = unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &nid) } != 0;
     APP.with(|a| {
         let mut a = a.borrow_mut();
-        a.shown = (hkl, enabled);
+        a.shown = (hkl, enabled, auto_on());
         if add {
             a.tray_added = ok;
         }
@@ -469,7 +528,7 @@ fn update_tray(add: bool) {
 }
 
 fn balloon(title: &str, text: &str) {
-    let (hkl, enabled) = APP.with(|a| a.borrow().shown);
+    let (hkl, enabled, _) = APP.with(|a| a.borrow().shown);
     let mut nid = tray_data(hkl, enabled);
     nid.uFlags = NIF_INFO;
     nid.dwInfoFlags = NIIF_INFO;
@@ -485,15 +544,23 @@ fn on_timer() {
     if !APP.with(|a| a.borrow().tray_added) {
         update_tray(true);
     }
+    layouts::refresh(&sys::installed_layouts());
+    hook::AUTO_PREF.store(if prefer_uk() { 0x22 } else { 0x19 }, Ordering::Relaxed);
     let (fg, hkl) = hook::foreground_layout();
     if fg == 0 || fg == hwnd() as isize || hkl == 0 {
         return;
     }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(fg as HWND, &mut pid) };
+    let app = sys::process_name(pid).filter(|n| n != "explorer.exe" && n != "rozkladka.exe");
     let enabled = hook::ENABLED.load(Ordering::Relaxed);
     let changed = APP.with(|a| {
         let mut a = a.borrow_mut();
         a.last_used.insert(hkl, unsafe { GetTickCount() });
-        a.shown != (hkl, enabled)
+        if app.is_some() {
+            a.last_app = app;
+        }
+        a.shown != (hkl, enabled, auto_on())
     });
     if changed {
         update_tray(false);
@@ -517,9 +584,43 @@ fn show_menu() {
             (ID_DOUBLE_SHIFT, "Двойной Shift = исправить слово".into(), check(hook::DOUBLE_SHIFT.load(Ordering::Relaxed))),
             (ID_AUTOSTART, "Автозапуск с Windows".into(), check(sys::autostart_enabled())),
         ];
-        for (id, text, flags) in items {
-            let w = wide(&text);
-            AppendMenuW(menu, MF_STRING | flags, id, w.as_ptr());
+        let mode = hook::AUTO_MODE.load(Ordering::Relaxed);
+        let auto_menu = CreatePopupMenu();
+        let add = |m: HMENU, id: usize, text: &str, checked: bool| {
+            let w = wide(text);
+            AppendMenuW(m, MF_STRING | check(checked), id, w.as_ptr());
+        };
+        add(auto_menu, ID_AUTO_OFF, "Выключено", mode == AUTO_OFF);
+        add(auto_menu, ID_AUTO_ALL, "Между всеми языками (EN ↔ UA ↔ RU)", mode == AUTO_ALL);
+        AppendMenuW(auto_menu, MF_SEPARATOR, 0, null());
+        let mut langs: Vec<u16> = Vec::new();
+        for h in sys::installed_layouts() {
+            let p = primary_lang(h);
+            if auto::Lang::from_primary(p).is_some() && !langs.contains(&p) {
+                langs.push(p);
+            }
+        }
+        for p in langs {
+            let name = match p {
+                0x22 => "Всё в Українську",
+                0x19 => "Всё в Русский",
+                _ => "Всё в English",
+            };
+            add(auto_menu, ID_AUTO_TARGET + p as usize, name, mode == 0x100 | p as u32);
+        }
+
+        let (id, text, flags) = &items[0];
+        add(menu, *id, text, *flags == MF_CHECKED);
+        let w = wide("Исправлять на лету");
+        AppendMenuW(menu, MF_POPUP | if mode != AUTO_OFF { MF_CHECKED } else { MF_UNCHECKED }, auto_menu as usize, w.as_ptr());
+        let last_app = APP.with(|a| a.borrow().last_app.clone());
+        if let Some(app) = &last_app {
+            let excluded = hook::EXCLUDED_APPS.read().map(|l| l.contains(app)).unwrap_or(false);
+            add(menu, ID_EXCLUDE_APP, &format!("Не исправлять на лету в «{app}»"), excluded);
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        for (id, text, flags) in items.iter().skip(1) {
+            add(menu, *id, text, *flags == MF_CHECKED);
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, null());
         let w = wide("Горячие клавиши…");
@@ -533,9 +634,35 @@ fn show_menu() {
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, null());
         PostMessageW(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu);
+        DestroyMenu(menu); // also destroys the submenu
 
-        match cmd as usize {
+        let cmd = cmd as usize;
+        if cmd == ID_AUTO_OFF || cmd == ID_AUTO_ALL || cmd > ID_AUTO_TARGET {
+            let mode = match cmd {
+                ID_AUTO_OFF => AUTO_OFF,
+                ID_AUTO_ALL => AUTO_ALL,
+                _ => 0x100 | (cmd - ID_AUTO_TARGET) as u32,
+            };
+            hook::AUTO_MODE.store(mode, Ordering::Relaxed);
+            sys::reg_set_dword("AutoMode", mode);
+            update_tray(false);
+            return;
+        }
+        if cmd == ID_EXCLUDE_APP {
+            if let Some(app) = last_app
+                && let Ok(mut l) = hook::EXCLUDED_APPS.write()
+            {
+                if let Some(i) = l.iter().position(|a| *a == app) {
+                    l.remove(i);
+                } else {
+                    l.push(app);
+                }
+                sys::reg_set_string("ExcludedApps", &l.join("|"));
+                hook::EXCLUDED_GEN.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        match cmd {
             ID_ENABLED => set_enabled(!hook::ENABLED.load(Ordering::Relaxed)),
             ID_DOUBLE_SHIFT => {
                 let on = !hook::DOUBLE_SHIFT.load(Ordering::Relaxed);
@@ -606,6 +733,19 @@ pub fn run() {
         // Settings
         hook::ENABLED.store(sys::reg_get_dword("Enabled").unwrap_or(1) != 0, Ordering::Relaxed);
         hook::DOUBLE_SHIFT.store(sys::reg_get_dword("DoubleShift").unwrap_or(1) != 0, Ordering::Relaxed);
+        hook::AUTO_MODE.store(sys::reg_get_dword("AutoMode").unwrap_or(AUTO_ALL), Ordering::Relaxed);
+        if let Ok(mut l) = hook::EXCLUDED_APPS.write() {
+            *l = sys::reg_get_string("ExcludedApps")
+                .unwrap_or_default()
+                .split('|')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+        if let Ok(mut ex) = hook::EXCEPTIONS.lock() {
+            *ex = Some(sys::load_exceptions());
+        }
+        layouts::refresh(&sys::installed_layouts());
         let first_run = sys::reg_get_dword("Initialized").is_none();
         if first_run {
             sys::set_autostart(true);
@@ -649,7 +789,7 @@ pub fn run() {
         if first_run {
             balloon(
                 "Rozkladka запущена",
-                "Pause или двойной Shift — исправить слово.\nShift+Pause — выделенный текст.\nПравый клик по иконке — настройки.",
+                "Слова в неправильной раскладке исправляются сами после пробела.\nPause — исправить/отменить. Правый клик по иконке — настройки и целевой язык.",
             );
         }
 

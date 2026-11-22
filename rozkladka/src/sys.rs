@@ -359,6 +359,70 @@ pub fn refresh_autostart_path() {
     }
 }
 
+pub fn reg_get_string(name: &str) -> Option<String> {
+    let (k, n) = (wide(APP_KEY), wide(name));
+    let mut buf = vec![0u16; 8192];
+    let mut size = (buf.len() * 2) as u32;
+    let r = unsafe {
+        RegGetValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), RRF_RT_REG_SZ, null_mut(), buf.as_mut_ptr() as _, &mut size)
+    };
+    if r != ERROR_SUCCESS {
+        return None;
+    }
+    let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    Some(String::from_utf16_lossy(&buf[..len]))
+}
+
+pub fn reg_set_string(name: &str, val: &str) {
+    let (k, n, v) = (wide(APP_KEY), wide(name), wide(val));
+    unsafe {
+        RegSetKeyValueW(HKEY_CURRENT_USER, k.as_ptr(), n.as_ptr(), REG_SZ, v.as_ptr() as _, (v.len() * 2) as u32);
+    }
+}
+
+/// Lower-case exe file name of a process, e.g. "chrome.exe".
+pub fn process_name(pid: u32) -> Option<String> {
+    use windows_sys::Win32::System::Threading::*;
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut len = buf.len() as u32;
+        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut len) != 0;
+        CloseHandle(h);
+        if !ok {
+            return None;
+        }
+        let path = String::from_utf16_lossy(&buf[..len as usize]);
+        path.rsplit(['\\', '/']).next().map(|s| s.to_lowercase())
+    }
+}
+
+/// %APPDATA%\Rozkladka\exceptions.txt — words that must not be corrected automatically.
+fn exceptions_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("APPDATA").map(|d| std::path::Path::new(&d).join("Rozkladka").join("exceptions.txt"))
+}
+
+pub fn load_exceptions() -> std::collections::HashSet<String> {
+    exceptions_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+pub fn add_exception(word: &str) {
+    use std::io::Write;
+    let Some(p) = exceptions_path() else { return };
+    if let Some(dir) = p.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(p) {
+        let _ = writeln!(f, "{word}");
+    }
+}
+
 pub fn message_box(text: &str, title: &str, flags: MESSAGEBOX_STYLE) {
     let (t, c) = (wide(text), wide(title));
     unsafe {
