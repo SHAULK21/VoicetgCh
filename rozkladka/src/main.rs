@@ -1,13 +1,13 @@
-//! Rozkladka — a tiny portable Punto Switcher-like layout fixer for Windows.
+//! Rozkladka — маленький портативный аналог Punto Switcher для Windows.
 //!
-//! On the fly: a word typed in the wrong layout is fixed after Space (Pause undoes it).
-//! Pause              — fix the last typed word (press again to try the next layout)
-//! Double Shift       — same as Pause (for laptops without a Pause key)
-//! Ctrl+Pause         — fix the whole last typed phrase
-//! Shift+Pause        — fix the selected text
-//! Alt+Pause          — iNVERT cASE of the selection / last word (forgotten CapsLock)
-//! Alt+Shift+Pause    — lower -> UPPER -> Title case
-//! Ctrl+Shift+Pause   — transliteration  Привіт <-> Pryvit
+//! На лету: слово, набранное не в той раскладке, исправляется после пробела (Pause — отмена).
+//! Pause              — исправить последнее слово (ещё раз — следующая раскладка)
+//! Двойной Shift      — то же, что Pause (для ноутбуков без Pause)
+//! Ctrl+Pause         — исправить всю последнюю фразу
+//! Shift+Pause        — исправить выделенный текст
+//! Alt+Pause          — иНВЕРСИЯ рЕГИСТРА выделения / последнего слова (забытый CapsLock)
+//! Alt+Shift+Pause    — строчные -> ПРОПИСНЫЕ -> Каждое Слово
+//! Ctrl+Shift+Pause   — транслитерация  Привіт <-> Pryvit
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
@@ -31,5 +31,5 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("Rozkladka works on Windows only. Build with: cargo build --release --target x86_64-pc-windows-gnu");
+    eprintln!("Rozkladka работает только в Windows. Сборка: cargo build --release --target x86_64-pc-windows-gnu");
 }

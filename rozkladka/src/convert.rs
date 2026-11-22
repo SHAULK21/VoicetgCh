@@ -1,8 +1,8 @@
-//! Pure text transformations (no Windows API), covered by unit tests.
+//! Чистые преобразования текста (без Windows API), покрыты юнит-тестами.
 
 use crate::keymap::KeyMap;
 
-/// Re-type `text` as if its keys had been pressed in layout `to` instead of `from`.
+/// Перепечатать `text` так, будто те же клавиши нажимались в раскладке `to`, а не `from`.
 pub fn convert_text(text: &str, from: &dyn KeyMap, to: &dyn KeyMap) -> String {
     text.chars()
         .map(|c| {
@@ -17,12 +17,12 @@ pub fn convert_text(text: &str, from: &dyn KeyMap, to: &dyn KeyMap) -> String {
         .collect()
 }
 
-/// How many letters of `text` can be typed in this layout (used to guess the source layout).
+/// Сколько букв `text` можно набрать в этой раскладке (для угадывания исходной раскладки).
 pub fn layout_score(text: &str, map: &dyn KeyMap) -> usize {
     text.chars().filter(|c| c.is_alphabetic() && map.locate(*c).is_some()).count()
 }
 
-/// пРИВЕТ -> Привет  (fixes text typed with CapsLock on by mistake).
+/// пРИВЕТ -> Привет  (исправляет текст, набранный со случайно включённым CapsLock).
 pub fn invert_case(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -37,7 +37,7 @@ pub fn invert_case(text: &str) -> String {
     out
 }
 
-/// строчные -> ПРОПИСНЫЕ -> Каждое Слово -> строчные ...
+/// строчные -> ПРОПИСНЫЕ -> Каждое Слово -> строчные …
 pub fn cycle_case(text: &str) -> String {
     let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
     if letters.is_empty() {
@@ -79,7 +79,7 @@ fn is_cyrillic(c: char) -> bool {
     ('\u{0400}'..='\u{04FF}').contains(&c)
 }
 
-/// Does the text look Ukrainian (`Some(true)`), Russian (`Some(false)`) or can't tell (`None`)?
+/// Похож ли текст на украинский (`Some(true)`), русский (`Some(false)`) или непонятно (`None`)?
 pub fn guess_ukrainian(text: &str) -> Option<bool> {
     let lower = text.to_lowercase();
     if lower.chars().any(|c| matches!(c, 'і' | 'ї' | 'є' | 'ґ')) {
@@ -91,8 +91,8 @@ pub fn guess_ukrainian(text: &str) -> Option<bool> {
     }
 }
 
-/// Cyrillic -> Latin, or Latin -> Cyrillic if the text has no Cyrillic letters.
-/// `prefer_uk` decides between Ukrainian and Russian when the text itself doesn't tell.
+/// Кириллица -> латиница, или латиница -> кириллица, если в тексте нет кириллицы.
+/// `prefer_uk` выбирает между украинским и русским, когда по тексту это не понять.
 pub fn translit(text: &str, prefer_uk: bool) -> String {
     if text.chars().any(is_cyrillic) {
         let uk = guess_ukrainian(text).unwrap_or(prefer_uk);
@@ -102,7 +102,7 @@ pub fn translit(text: &str, prefer_uk: bool) -> String {
     }
 }
 
-/// Copy the case pattern of the source letter onto a multi-letter replacement.
+/// Перенести регистр исходной буквы на многобуквенную замену.
 fn push_cased(out: &mut String, rep: &str, upper: bool, all_caps: bool) {
     if !upper {
         out.push_str(rep);
@@ -117,7 +117,7 @@ fn push_cased(out: &mut String, rep: &str, upper: bool, all_caps: bool) {
     }
 }
 
-/// Is the letter at `i` part of an ALL-CAPS word (so multi-letter output must be upper case)?
+/// Входит ли буква `i` в слово ПРОПИСНЫМИ (тогда многобуквенная замена тоже прописная)?
 fn all_caps_at(chars: &[char], i: usize) -> bool {
     let next = chars.get(i + 1).copied().filter(|c| c.is_alphabetic());
     let prev = if i > 0 { Some(chars[i - 1]).filter(|c| c.is_alphabetic()) } else { None };
@@ -136,7 +136,7 @@ fn cyr_to_lat(text: &str, uk: bool) -> String {
         let word_start = i == 0 || !(chars[i - 1].is_alphabetic() || is_apostrophe(chars[i - 1]));
         let prev_lower = if i > 0 { chars[i - 1].to_lowercase().next() } else { None };
         let rep: Option<&str> = if uk {
-            // Official Ukrainian transliteration (Cabinet of Ministers resolution No. 55, 2010).
+            // Официальная украинская транслитерация (постановление КМУ № 55, 2010).
             match lc {
                 'а' => Some("a"),
                 'б' => Some("b"),
@@ -171,7 +171,7 @@ fn cyr_to_lat(text: &str, uk: bool) -> String {
                 'ь' => Some(""),
                 'ю' => Some(if word_start { "yu" } else { "iu" }),
                 'я' => Some(if word_start { "ya" } else { "ia" }),
-                // Russian letters inside Ukrainian text
+                // Русские буквы внутри украинского текста
                 'ы' => Some("y"),
                 'э' => Some("e"),
                 'ё' => Some("yo"),
@@ -222,7 +222,7 @@ fn cyr_to_lat(text: &str, uk: bool) -> String {
         };
         match rep {
             Some(r) => push_cased(&mut out, r, c.is_uppercase(), all_caps_at(&chars, i)),
-            // The Ukrainian apostrophe is dropped in transliteration.
+            // Украинский апостроф при транслитерации опускается.
             None if uk && is_apostrophe(c) && i > 0 && chars[i - 1].is_alphabetic() && is_cyrillic(chars[i - 1]) => {}
             None => out.push(c),
         }
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn caps_render() {
         let ru = Builtin::ru();
-        // ';' key with CapsLock in RU is the letter Ж, '.' key stays '.'
+        // Клавиша ';' с CapsLock в RU — буква Ж, а клавиша '.' остаётся '.'
         assert_eq!(ru.render(0x27, false, true), Some('Ж'));
         assert_eq!(ru.render(0x35, false, true), Some('.'));
         assert_eq!(Builtin::en().render(0x27, false, true), Some(';'));

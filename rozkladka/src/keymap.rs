@@ -1,15 +1,15 @@
-//! Physical key  <->  character mapping for keyboard layouts.
+//! Соответствие «физическая клавиша <-> символ» для раскладок клавиатуры.
 //!
-//! Every typed key is remembered by its *scan code* (the physical position on the
-//! keyboard), so the same key sequence can be re-rendered in any other layout.
-//! On Windows the real installed layouts are queried (`WinMap`), so any layout the
-//! user has (Ukrainian, Ukrainian Enhanced, Russian, German, Polish, ...) works.
-//! Built-in tables for EN / UK / RU are used as a fallback and for tests.
+//! Каждая нажатая клавиша запоминается по *скан-коду* (физическому положению на
+//! клавиатуре), поэтому ту же последовательность клавиш можно «перепечатать» в любой
+//! другой раскладке. В Windows опрашиваются реально установленные раскладки (`WinMap`),
+//! так что работает любая раскладка пользователя (украинская, украинская расширенная,
+//! русская, немецкая, польская …). Встроенные таблицы EN / UK / RU — запасной вариант и для тестов.
 
-/// Scan code of the space bar.
+/// Скан-код пробела.
 pub const SCAN_SPACE: u16 = 0x39;
 
-/// Scan codes of the 47 "character" keys of a standard keyboard, row by row:
+/// Скан-коды 47 «символьных» клавиш стандартной клавиатуры, по рядам:
 /// `1234567890-=`, `qwertyuiop[]`, `asdfghjkl;'`, `\`, `zxcvbnm,./`.
 pub const SCANS: [u16; 47] = [
     0x29, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, //
@@ -19,15 +19,15 @@ pub const SCANS: [u16; 47] = [
     0x2C, 0x2D, 0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
 ];
 
-/// Is this scan code one of the keys we track while the user types?
+/// Входит ли скан-код в клавиши, которые мы отслеживаем при наборе?
 pub fn is_char_scan(scan: u16) -> bool {
     SCANS.contains(&scan)
 }
 
 pub trait KeyMap {
-    /// Character produced by the physical key `scan` with the given Shift / CapsLock state.
+    /// Символ, который даёт физическая клавиша `scan` при данном состоянии Shift / CapsLock.
     fn render(&self, scan: u16, shift: bool, caps: bool) -> Option<char>;
-    /// Physical key (scan code) and Shift state that produce `ch`.
+    /// Физическая клавиша (скан-код) и состояние Shift, которые дают символ `ch`.
     fn locate(&self, ch: char) -> Option<(u16, bool)>;
 }
 
@@ -51,7 +51,7 @@ impl Builtin {
         )
     }
 
-    /// Ukrainian (Enhanced): `'` on the tilde key, `ґ` on the backslash key.
+    /// Украинская (расширенная): `'` на клавише тильды, `ґ` на клавише обратной косой черты.
     pub fn uk() -> Self {
         Self::new(
             "'1234567890-=йцукенгшщзхїфівапролджєґячсмитьбю.",
@@ -66,7 +66,7 @@ impl Builtin {
         )
     }
 
-    /// Built-in table for a Windows primary language id (low 10 bits of a LANGID).
+    /// Встроенная таблица для основного языка Windows (младшие 10 бит LANGID).
     pub fn for_primary_lang(primary: u16) -> Option<Self> {
         match primary {
             0x09 => Some(Self::en()),
@@ -99,7 +99,7 @@ impl KeyMap for Builtin {
     }
 }
 
-/// A real Windows keyboard layout (HKL), with a built-in table as fallback.
+/// Настоящая раскладка Windows (HKL) со встроенной таблицей как запасным вариантом.
 #[cfg(windows)]
 pub struct WinMap {
     hkl: windows_sys::Win32::UI::Input::KeyboardAndMouse::HKL,
@@ -135,7 +135,7 @@ impl KeyMap for WinMap {
                     state[VK_CAPITAL as usize] = 0x01;
                 }
                 let mut buf = [0u16; 8];
-                // wFlags = 4: do not change the keyboard state (no dead-key side effects).
+                // wFlags = 4: не менять состояние клавиатуры (без побочных эффектов «мёртвых» клавиш).
                 let n = ToUnicodeEx(vk, scan as u32, state.as_ptr(), buf.as_mut_ptr(), buf.len() as i32, 4, self.hkl);
                 if n == 1 || n == -1 {
                     char::from_u32(buf[0] as u32).filter(|c| !c.is_control())
@@ -158,7 +158,7 @@ impl KeyMap for WinMap {
             if r != -1 {
                 let vk = (r as u16 & 0xFF) as u32;
                 let mods = (r as u16 >> 8) & 0xFF;
-                // Characters that need Ctrl / Alt (AltGr) are not "plain" keys.
+                // Символы, которым нужен Ctrl / Alt (AltGr), — не «обычные» клавиши.
                 if mods & 0b110 == 0 {
                     let scan = unsafe { MapVirtualKeyExW(vk, MAPVK_VK_TO_VSC, self.hkl) } as u16;
                     if scan != 0 {

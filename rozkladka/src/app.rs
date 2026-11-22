@@ -1,4 +1,4 @@
-//! Main thread: hidden window, tray icon, settings and the hotkey actions.
+//! Главный поток: скрытое окно, иконка в трее, настройки и действия горячих клавиш.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ const ID_EXIT: usize = 5;
 const ID_EXCLUDE_APP: usize = 6;
 const ID_AUTO_OFF: usize = 10;
 const ID_AUTO_ALL: usize = 11;
-/// ID_AUTO_TARGET + primary LANGID = "everything into this language".
+/// ID_AUTO_TARGET + основной LANGID = «всё в этот язык».
 const ID_AUTO_TARGET: usize = 0x1000;
 
 const APP_TITLE: &str = "Rozkladka";
@@ -43,9 +43,9 @@ const APP_TITLE: &str = "Rozkladka";
 const HELP: &str = "Rozkladka — исправление текста, набранного не в той раскладке.\n\n\
 НА ЛЕТУ (меню → «Исправлять на лету»): слово, набранное не в той раскладке, исправляется\n\
 само после пробела, и раскладка переключается. Можно выбрать целевой язык\n\
-(«Всё в Українську» и т.п.) или режим «между всеми языками».\n\
+(«Всё на украинский» и т.п.) или режим «между всеми языками».\n\
 Если исправило зря — сразу нажмите Pause: слово вернётся и запомнится как исключение.\n\n\
-Pause — исправить последнее слово\n      (нажмите ещё раз — следующая раскладка: EN → UA → RU …)\n\
+Pause — исправить последнее слово\n      (нажмите ещё раз — следующая раскладка: англ. → укр. → рус. …)\n\
 Двойной Shift — то же самое (для ноутбуков без Pause)\n\
 Ctrl+Pause (Break) — исправить всю последнюю фразу\n\
 Shift+Pause — исправить выделенный текст\n\
@@ -62,7 +62,7 @@ enum SessionKey {
     Selection(String),
 }
 
-/// Remembers the last conversion so that pressing the hotkey again cycles to the next layout.
+/// Запоминает последнюю конвертацию, чтобы повторное нажатие переходило к следующей раскладке.
 struct Session {
     key: SessionKey,
     cur: isize,
@@ -78,7 +78,7 @@ struct App {
     session: Option<Session>,
     taskbar_created: u32,
     tray_added: bool,
-    /// Last foreground program (for "don't correct in this program").
+    /// Последняя активная программа (для пункта «не исправлять в этой программе»).
     last_app: Option<String>,
 }
 
@@ -108,10 +108,10 @@ fn primary_lang(hkl: isize) -> u16 {
 }
 
 // =============================================================================================
-// Layout logic
+// Логика раскладок
 // =============================================================================================
 
-/// Rough "script" of a layout: 1 = Latin, 2 = Cyrillic, other = the character itself.
+/// Грубо «алфавит» раскладки: 1 — латиница, 2 — кириллица, иначе — сам символ.
 fn script_of(hkl: isize) -> u32 {
     match WinMap::new(hkl).render(0x1E, false, false) {
         Some(c) if c.is_ascii_alphabetic() => 1,
@@ -121,9 +121,9 @@ fn script_of(hkl: isize) -> u32 {
     }
 }
 
-/// Order in which layouts are tried when converting text typed in `src`:
-/// first the most recently used layout of a *different* script (Latin <-> Cyrillic),
-/// then all other installed layouts, and finally back to `src`.
+/// Порядок перебора раскладок при конвертации текста, набранного в `src`:
+/// сначала последняя использованная раскладка *другого* алфавита (латиница <-> кириллица),
+/// затем остальные установленные и в конце снова `src`.
 fn build_seq(src: isize) -> Vec<isize> {
     let list = sys::installed_layouts();
     let others: Vec<isize> = list.iter().copied().filter(|&h| h != src).collect();
@@ -147,7 +147,7 @@ fn build_seq(src: isize) -> Vec<isize> {
     seq
 }
 
-/// Guess which installed layout the text was typed in.
+/// Угадать, в какой из установленных раскладок набран текст.
 fn detect_source(text: &str) -> isize {
     let (_, fg_hkl) = hook::foreground_layout();
     let mut best = (0usize, false, 0u32, fg_hkl);
@@ -161,7 +161,7 @@ fn detect_source(text: &str) -> isize {
     best.3
 }
 
-/// Returns (from, to) layouts for this conversion, continuing the previous session if it matches.
+/// Возвращает раскладки (из, в) для конвертации, продолжая предыдущую сессию, если она совпадает.
 fn next_layouts(key: SessionKey, src: impl FnOnce() -> isize) -> Option<(isize, isize)> {
     APP.with(|a| {
         let mut a = a.borrow_mut();
@@ -190,7 +190,7 @@ fn set_session_key(key: SessionKey) {
     });
 }
 
-/// Should transliteration / ambiguous text prefer Ukrainian over Russian?
+/// Предпочитать ли украинский русскому при транслитерации / неоднозначном тексте?
 fn prefer_uk() -> bool {
     let mut cyr: Vec<(u32, u16)> = APP.with(|a| {
         a.borrow().last_used.iter().map(|(&h, &t)| (t, primary_lang(h))).filter(|&(_, l)| l == 0x22 || l == 0x19).collect()
@@ -204,10 +204,10 @@ fn prefer_uk() -> bool {
 }
 
 // =============================================================================================
-// Actions
+// Действия
 // =============================================================================================
 
-/// Number of characters of the last word (+ trailing spaces) in the typing buffer.
+/// Число символов последнего слова (+ пробелы после него) в буфере набора.
 fn last_word_len() -> usize {
     let Ok(b) = hook::BUF.lock() else { return 0 };
     let n = b.keys.len();
@@ -222,12 +222,12 @@ fn last_word_len() -> usize {
     if end == start { 0 } else { n - start }
 }
 
-/// Retype the last word (or the whole phrase) from the recorded keystrokes in the next layout.
+/// Перепечатать последнее слово (или всю фразу) из запомненных нажатий в следующей раскладке.
 fn convert_buffer(phrase: bool) {
     let job = {
         let Ok(mut b) = hook::BUF.lock() else { return };
         let n = b.keys.len();
-        // Pause right after an automatic correction = undo it and remember the word.
+        // Pause сразу после автоисправления = отменить его и запомнить слово.
         if let Some(u) = b.undo.take()
             && u.version == b.version
             && n == u.end + 1
@@ -305,7 +305,7 @@ fn transform(action: Action, text: &str) -> Option<(String, Option<isize>)> {
     }
 }
 
-/// Editors like VS Code copy the whole line when nothing is selected.
+/// Редакторы вроде VS Code без выделения копируют всю строку.
 fn looks_like_line_copy(t: &str) -> bool {
     t.ends_with('\n') && !t.trim_end_matches(['\r', '\n']).contains('\n')
 }
@@ -314,7 +314,7 @@ fn selection_action(action: Action, allow_fallback: bool) {
     let hwnd = hwnd();
     let saved = sys::save_clipboard(hwnd);
     let seq = sys::clipboard_seq();
-    sys::tap_combo(VK_LCONTROL, VK_INSERT); // copy (safer than Ctrl+C in terminals)
+    sys::tap_combo(VK_LCONTROL, VK_INSERT); // копировать (в терминалах безопаснее, чем Ctrl+C)
     let mut text = None;
     for _ in 0..50 {
         sleep(Duration::from_millis(10));
@@ -334,7 +334,7 @@ fn selection_action(action: Action, allow_fallback: bool) {
         if !allow_fallback {
             return;
         }
-        // Nothing selected: work on the last typed word.
+        // Ничего не выделено: работаем с последним набранным словом.
         if action == Action::ConvertSelection {
             convert_buffer(false);
         } else if word_len > 0 {
@@ -349,11 +349,11 @@ fn selection_action(action: Action, allow_fallback: bool) {
         && out != text
     {
         sys::set_clipboard_text(hwnd, &out);
-        sys::tap_combo(VK_LSHIFT, VK_INSERT); // paste
+        sys::tap_combo(VK_LSHIFT, VK_INSERT); // вставить
         if let Some(h) = layout {
             sys::activate_layout(h);
         }
-        // Keep the result selected so the hotkey can be pressed again.
+        // Оставить результат выделенным, чтобы горячую клавишу можно было нажать ещё раз.
         let n = out.chars().filter(|&c| c != '\r').count();
         if n <= 3000 {
             sys::select_left(n);
@@ -374,7 +374,7 @@ fn do_action(action: Action) {
 }
 
 // =============================================================================================
-// Tray icon
+// Иконка в трее
 // =============================================================================================
 
 fn lang_label(hkl: isize) -> String {
@@ -418,7 +418,7 @@ fn make_icon(label: &str, bg: u32, fg: u32, auto_bar: bool) -> HICON {
         FillRect(dc, &rect, brush);
         DeleteObject(brush);
         if auto_bar {
-            // Green stripe at the bottom = on-the-fly correction is on.
+            // Зелёная полоска внизу = исправление на лету включено.
             let h = (size / 8).max(2);
             let bar = RECT { left: 0, top: size - h, right: size, bottom: size };
             let brush = CreateSolidBrush(rgb(40, 200, 90));
@@ -437,7 +437,7 @@ fn make_icon(label: &str, bg: u32, fg: u32, auto_bar: bool) -> HICON {
         DrawTextW(dc, text.as_mut_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         GdiFlush();
 
-        // Opaque everywhere except slightly rounded corners.
+        // Непрозрачно везде, кроме слегка скруглённых углов.
         let px = std::slice::from_raw_parts_mut(bits as *mut u32, (size * size) as usize);
         let s = size as usize;
         for y in 0..s {
@@ -540,7 +540,7 @@ fn balloon(title: &str, text: &str) {
 }
 
 fn on_timer() {
-    // At logon Explorer may not be ready yet when we start: retry adding the icon.
+    // При входе в систему Проводник может быть ещё не готов: пробуем добавить иконку снова.
     if !APP.with(|a| a.borrow().tray_added) {
         update_tray(true);
     }
@@ -591,7 +591,7 @@ fn show_menu() {
             AppendMenuW(m, MF_STRING | check(checked), id, w.as_ptr());
         };
         add(auto_menu, ID_AUTO_OFF, "Выключено", mode == AUTO_OFF);
-        add(auto_menu, ID_AUTO_ALL, "Между всеми языками (EN ↔ UA ↔ RU)", mode == AUTO_ALL);
+        add(auto_menu, ID_AUTO_ALL, "Между всеми языками (англ. ↔ укр. ↔ рус.)", mode == AUTO_ALL);
         AppendMenuW(auto_menu, MF_SEPARATOR, 0, null());
         let mut langs: Vec<u16> = Vec::new();
         for h in sys::installed_layouts() {
@@ -602,9 +602,9 @@ fn show_menu() {
         }
         for p in langs {
             let name = match p {
-                0x22 => "Всё в Українську",
-                0x19 => "Всё в Русский",
-                _ => "Всё в English",
+                0x22 => "Всё на украинский",
+                0x19 => "Всё на русский",
+                _ => "Всё на английский",
             };
             add(auto_menu, ID_AUTO_TARGET + p as usize, name, mode == 0x100 | p as u32);
         }
@@ -634,7 +634,7 @@ fn show_menu() {
         SetForegroundWindow(hwnd);
         let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, null());
         PostMessageW(hwnd, WM_NULL, 0, 0);
-        DestroyMenu(menu); // also destroys the submenu
+        DestroyMenu(menu); // заодно уничтожает подменю
 
         let cmd = cmd as usize;
         if cmd == ID_AUTO_OFF || cmd == ID_AUTO_ALL || cmd > ID_AUTO_TARGET {
@@ -710,7 +710,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             _ => {
                 if msg != 0 && msg == APP.with(|a| a.borrow().taskbar_created) {
-                    update_tray(true); // Explorer restarted
+                    update_tray(true); // Проводник перезапустился
                     return 0;
                 }
                 DefWindowProcW(hwnd, msg, wparam, lparam)
@@ -730,7 +730,7 @@ pub fn run() {
             return;
         }
 
-        // Settings
+        // Настройки
         hook::ENABLED.store(sys::reg_get_dword("Enabled").unwrap_or(1) != 0, Ordering::Relaxed);
         hook::DOUBLE_SHIFT.store(sys::reg_get_dword("DoubleShift").unwrap_or(1) != 0, Ordering::Relaxed);
         hook::AUTO_MODE.store(sys::reg_get_dword("AutoMode").unwrap_or(AUTO_ALL), Ordering::Relaxed);

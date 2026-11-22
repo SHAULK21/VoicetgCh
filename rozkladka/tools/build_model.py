@@ -1,14 +1,14 @@
-"""Builds the language data embedded into rozkladka.exe (data/*.tri, data/*.bloom).
+"""Собирает языковые данные, встраиваемые в rozkladka.exe (data/*.tri, data/*.bloom).
 
-Source: word frequency lists from https://github.com/hermitdave/FrequencyWords
-(OpenSubtitles 2018). Usage:
+Источник: частотные списки слов https://github.com/hermitdave/FrequencyWords
+(OpenSubtitles 2018). Запуск:
 
-    python3 build_model.py <dir with en_full.txt uk_full.txt ru_full.txt>
+    python3 build_model.py <папка с en_full.txt uk_full.txt ru_full.txt>
 
-*.tri   - letter trigram model: n^3 bytes, q = round(-log2 P(c | a b) * 8), alphabet in lm.ALPHA
-*.bloom - Bloom filter of the most frequent words:
-          u32 LE bit count, u8 hash count, then the bit array (LSB first).
-          Hash: FNV-1a 64 over UTF-8; h1 = low 32 bits, h2 = high 32 bits | 1; bit_i = (h1 + i*h2) mod m
+*.tri   - буквенная триграммная модель: n^3 байт, q = round(-log2 P(c | a b) * 8), алфавит в lm.ALPHA
+*.bloom - фильтр Блума самых частых слов:
+          u32 LE число бит, u8 число хешей, затем битовый массив (младший бит первым).
+          Хеш: FNV-1a 64 от UTF-8; h1 = младшие 32 бита, h2 = старшие 32 бита | 1; бит_i = (h1 + i*h2) mod m
 """
 import os, struct, sys
 from lm import load, train

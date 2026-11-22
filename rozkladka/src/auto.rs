@@ -1,11 +1,11 @@
-//! On-the-fly correction: decides whether a word was typed in the wrong layout.
+//! Исправление на лету: решает, набрано ли слово не в той раскладке.
 //!
-//! For every language there is a Bloom filter with the 50 000 most frequent words and a
-//! letter-trigram model (see `tools/build_model.py`). A word typed in layout T is replaced by
-//! its rendering in layout G when the G-version is a known word (or looks much more like the
-//! language G than the original looks like T) and the original is not a known word of T.
-//! Thresholds were tuned on held-out words: ~98% of common mistyped words are fixed while only
-//! ~0.2% of rare, correctly typed words get touched (and Pause undoes it).
+//! Для каждого языка есть фильтр Блума с 50 000 самых частых слов и буквенная триграммная
+//! модель (см. `tools/build_model.py`). Слово, набранное в раскладке T, заменяется его
+//! вариантом в раскладке G, если G-вариант — известное слово (или намного больше похож на
+//! язык G, чем оригинал на язык T), а оригинал — не известное слово языка T.
+//! Пороги подобраны на отложенной выборке: ~98% частых слов, набранных не в той раскладке,
+//! исправляются, а редкие правильно набранные слова задеваются лишь в ~0,2% случаев (Pause отменяет).
 
 use std::sync::OnceLock;
 
@@ -34,7 +34,7 @@ impl Lang {
         self != Lang::En
     }
 
-    /// Real one-letter words (one-letter words are never corrected by the models).
+    /// Настоящие однобуквенные слова (однобуквенные слова моделями не исправляются).
     fn single_letter_words(self) -> &'static str {
         match self {
             Lang::En => "ai",
@@ -44,7 +44,7 @@ impl Lang {
     }
 }
 
-// Same alphabets as tools/lm.py (index 0 = word boundary).
+// Те же алфавиты, что в tools/lm.py (индекс 0 — граница слова).
 const ALPHA: [&str; 3] = [
     "_abcdefghijklmnopqrstuvwxyz'",
     "_абвгґдеєжзиіїйклмнопрстуфхцчшщьюя'",
@@ -61,13 +61,13 @@ const BLOOM: [&[u8]; 3] = [
     include_bytes!("../data/ru.bloom"),
 ];
 
-/// Minimum log-likelihood gain (bits) for a dictionary hit: Latin<->Cyrillic / Cyrillic<->Cyrillic.
-/// Ukrainian and Russian share most words, so between them we need more evidence — unless the
-/// user explicitly chose the target language.
+/// Минимальный выигрыш правдоподобия (в битах) при попадании в словарь: латиница<->кириллица /
+/// кириллица<->кириллица. У украинского и русского много общих слов, поэтому между ними нужно
+/// больше уверенности — если только пользователь явно не выбрал целевой язык.
 const K_DICT: f32 = 2.0;
 const K_DICT_CYR: f32 = 4.0;
 const K_DICT_CYR_TARGET: f32 = 0.5;
-/// Without a dictionary hit: minimum gain, maximum average bits/symbol, minimum word length.
+/// Без попадания в словарь: минимальный выигрыш, максимум средних бит на символ, минимальная длина слова.
 const K_MODEL: f32 = 10.0;
 const MAX_AVG_BITS: f32 = 4.5;
 const MIN_LEN_MODEL: usize = 4;
@@ -107,7 +107,7 @@ fn fnv1a(data: &[u8]) -> u64 {
     h
 }
 
-/// Is `w` (normalized) one of the frequent words of the language?
+/// Входит ли `w` (нормализованное) в частые слова языка?
 pub fn in_dict(l: Lang, w: &str) -> bool {
     let md = model(l);
     let h = fnv1a(w.as_bytes());
@@ -126,7 +126,7 @@ fn norm_char(l: Lang, c: char) -> char {
     }
 }
 
-/// Lower case, unified apostrophe, `ё` -> `е` for Russian.
+/// Строчные буквы, единый апостроф, `ё` -> `е` для русского.
 pub fn normalize(l: Lang, s: &str) -> String {
     s.chars().map(|c| norm_char(l, c)).collect()
 }
@@ -135,7 +135,7 @@ fn sym(md: &Model, c: char) -> Option<usize> {
     md.alpha.iter().skip(1).position(|&a| a == c).map(|i| i + 1)
 }
 
-/// Average -log2 P per symbol of a normalized word (lower = more plausible).
+/// Среднее -log2 P на символ нормализованного слова (меньше — правдоподобнее).
 pub fn score(l: Lang, w: &str) -> Option<f32> {
     let md = model(l);
     let n = md.alpha.len();
@@ -151,8 +151,8 @@ pub fn score(l: Lang, w: &str) -> Option<f32> {
     Some(total as f32 / 8.0 / (s.len() - 2) as f32)
 }
 
-/// The word itself without punctuation around it, if it consists of letters of the language only.
-/// Returns (normalized, original-case) forms.
+/// Само слово без окружающей пунктуации, если оно состоит только из букв языка.
+/// Возвращает (нормализованную форму, форму в исходном регистре).
 fn core(l: Lang, text: &str) -> Option<(String, String)> {
     let md = model(l);
     let is_letter = |c: char| {
@@ -167,7 +167,7 @@ fn core(l: Lang, text: &str) -> Option<(String, String)> {
     if norm.chars().all(|c| sym(md, c).is_some()) { Some((norm, orig.to_string())) } else { None }
 }
 
-/// Only lower case, UPPER CASE or Title case words are corrected (not iPhone, McDonald etc.).
+/// Исправляются только слова строчными, ПРОПИСНЫМИ или С Заглавной (не iPhone, McDonald и т.п.).
 fn case_ok(orig: &str) -> bool {
     let letters: Vec<char> = orig.chars().filter(|c| c.is_alphabetic()).collect();
     let rest_lower = letters.iter().skip(1).all(|c| !c.is_uppercase());
@@ -175,9 +175,9 @@ fn case_ok(orig: &str) -> bool {
     rest_lower || all_upper
 }
 
-/// Decide whether `t_text` (as typed in a layout of language `t_lang`) should be replaced by one
-/// of `cands` (the same keys rendered in other layouts). Returns the index of the candidate.
-/// `target_mode`: the user picked one target language (cands then holds only that language).
+/// Решает, заменять ли `t_text` (набранный в раскладке языка `t_lang`) одним из `cands`
+/// (те же клавиши в других раскладках). Возвращает индекс кандидата.
+/// `target_mode`: пользователь выбрал один целевой язык (тогда в cands только он).
 pub fn decide(t_lang: Lang, t_text: &str, cands: &[(Lang, &str)], pref: Option<Lang>, target_mode: bool) -> Option<usize> {
     let t = core(t_lang, t_text);
     if let Some((tn, to)) = &t
@@ -219,8 +219,8 @@ pub fn decide(t_lang: Lang, t_text: &str, cands: &[(Lang, &str)], pref: Option<L
     best.map(|b| b.0)
 }
 
-/// A one-letter word typed right before a corrected word: fix it too if it is a real one-letter
-/// word in the target language but not in the typed one (e.g. `z ns` -> `я ти`).
+/// Однобуквенное слово прямо перед исправленным: исправить и его, если это настоящее
+/// однобуквенное слово целевого языка, но не набранного (например, `z ns` -> `я ти`).
 pub fn fix_single_letter(t_lang: Lang, t: char, g_lang: Lang, g: char) -> bool {
     let (t, g) = (t.to_lowercase().next().unwrap_or(t), g.to_lowercase().next().unwrap_or(g));
     g_lang.single_letter_words().contains(g) && !t_lang.single_letter_words().contains(t)
@@ -236,12 +236,12 @@ mod tests {
         crate::convert::convert_text(text, from, to)
     }
 
-    /// Simulates typing `text` in layout `t` with EN / UK / RU installed ("all languages" mode).
+    /// Имитирует набор `text` в раскладке `t` при установленных EN / UK / RU (режим «между всеми языками»).
     fn auto(t: Lang, text: &str, pref: Option<Lang>) -> Option<String> {
         run(t, text, pref, None)
     }
 
-    /// Same with one chosen target language.
+    /// То же с одним выбранным целевым языком.
     fn to(target: Lang, t: Lang, text: &str) -> Option<String> {
         run(t, text, None, Some(target))
     }
@@ -281,21 +281,21 @@ mod tests {
         assert_eq!(auto(Ru, "ЕУЫЕ", None).as_deref(), Some("TEST"));
         assert_eq!(auto(En, "cgfcb,j", Some(Ru)).as_deref(), Some("спасибо"));
         assert_eq!(auto(En, "nfr", Some(Uk)).as_deref(), Some("так"));
-        // Russian typed in the Ukrainian layout and vice versa
-        assert_eq!(auto(Uk, "спасибо", None), None); // identical in both layouts
+        // Русское слово в украинской раскладке и наоборот
+        assert_eq!(auto(Uk, "спасибо", None), None); // в обеих раскладках одинаково
         assert_eq!(auto(Uk, "щоб", None), None);
     }
 
     #[test]
     fn target_language() {
-        // "Everything into Ukrainian": Russian-layout typos become Ukrainian too.
+        // «Всё на украинский»: опечатки в русской раскладке тоже становятся украинскими.
         assert_eq!(to(Uk, Ru, "привыт").as_deref(), Some("привіт"));
         assert_eq!(to(Uk, En, "ghbdsn").as_deref(), Some("привіт"));
-        assert_eq!(to(Uk, En, "hello"), None); // real English words stay
-        assert_eq!(to(Ru, Uk, "привіт"), None); // real Ukrainian word stays even in RU mode? it's a valid word of the typed layout
+        assert_eq!(to(Uk, En, "hello"), None); // настоящие английские слова остаются
+        assert_eq!(to(Ru, Uk, "привіт"), None); // настоящее слово набранной раскладки остаётся даже в режиме «на русский»
         assert_eq!(to(En, Uk, "руддщ").as_deref(), Some("hello"));
         assert_eq!(to(En, Ru, "привет"), None);
-        // In "all languages" mode we are more careful between Ukrainian and Russian.
+        // В режиме «между всеми языками» между украинским и русским мы осторожнее.
         assert_eq!(auto(Ru, "привыт", Some(Uk)), None);
     }
 

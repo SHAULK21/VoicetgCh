@@ -1,4 +1,4 @@
-//! Thin wrappers over Win32: keyboard input injection, clipboard, registry.
+//! Тонкие обёртки над Win32: эмуляция ввода с клавиатуры, буфер обмена, реестр.
 
 use std::ptr::null_mut;
 use std::thread::sleep;
@@ -16,7 +16,7 @@ pub fn wide(s: &str) -> Vec<u16> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Keyboard input
+// Ввод с клавиатуры
 // ---------------------------------------------------------------------------------------------
 
 fn is_extended(vk: u16) -> bool {
@@ -59,10 +59,10 @@ pub fn pressed(vk: u16) -> bool {
     unsafe { GetAsyncKeyState(vk as i32) as u16 & 0x8000 != 0 }
 }
 
-/// Make sure no modifier key is held before we start typing / copying.
+/// Убедиться, что ни один модификатор не зажат, прежде чем печатать / копировать.
 pub fn release_modifiers() {
-    // If Alt or Win is held, a "neutral" key press prevents the menu bar / Start menu
-    // from popping up when the user releases it (we swallowed the Pause key).
+    // Если зажат Alt или Win, «нейтральное» нажатие не даст открыться строке меню / меню «Пуск»,
+    // когда пользователь его отпустит (клавишу Pause мы «проглотили»).
     if pressed(VK_MENU) || pressed(VK_LWIN) || pressed(VK_RWIN) {
         send(&[vk_input(0xE8, false), vk_input(0xE8, true)]);
     }
@@ -90,7 +90,7 @@ pub fn backspaces(n: usize) {
     send(&v);
 }
 
-/// Select `n` characters to the left of the caret.
+/// Выделить `n` символов слева от курсора.
 pub fn select_left(n: usize) {
     let mut v = Vec::with_capacity(n * 2 + 2);
     v.push(vk_input(VK_LSHIFT, false));
@@ -127,7 +127,7 @@ pub fn type_text(s: &str) {
     send(&v);
 }
 
-/// Ask the foreground window to switch to keyboard layout `hkl`.
+/// Попросить активное окно переключиться на раскладку `hkl`.
 pub fn activate_layout(hkl: isize) {
     unsafe {
         let fg = GetForegroundWindow();
@@ -151,7 +151,7 @@ pub fn installed_layouts() -> Vec<isize> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Clipboard
+// Буфер обмена
 // ---------------------------------------------------------------------------------------------
 
 const CF_UNICODETEXT: u32 = 13;
@@ -166,11 +166,11 @@ fn open_clipboard(hwnd: HWND) -> bool {
     false
 }
 
-/// Saved clipboard contents (all memory-based formats).
+/// Сохранённое содержимое буфера обмена (все форматы в памяти).
 pub struct SavedClipboard(Vec<(u32, Vec<u8>)>);
 
 fn restorable_format(f: u32) -> bool {
-    // GDI-handle based / owner-drawn / private formats can't be copied as plain memory.
+    // Форматы на GDI-дескрипторах / owner-drawn / приватные нельзя скопировать как простую память.
     !matches!(f, 2 | 3 | 9 | 14 | 0x80 | 0x82 | 0x83 | 0x8E | 0x200..=0x3FF)
 }
 
@@ -277,7 +277,7 @@ pub fn set_clipboard_text(hwnd: HWND, text: &str) {
         let w = wide(text);
         let bytes = std::slice::from_raw_parts(w.as_ptr() as *const u8, w.len() * 2);
         put_bytes(CF_UNICODETEXT, bytes);
-        // Keep our temporary text out of Win+V clipboard history and cloud sync.
+        // Не пускать наш временный текст в журнал буфера обмена (Win+V) и облачную синхронизацию.
         let name = wide("ExcludeClipboardContentFromMonitorProcessing");
         let f = RegisterClipboardFormatW(name.as_ptr());
         if f != 0 {
@@ -292,7 +292,7 @@ pub fn clipboard_seq() -> u32 {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Registry (settings + autostart)
+// Реестр (настройки + автозапуск)
 // ---------------------------------------------------------------------------------------------
 
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
@@ -350,7 +350,7 @@ pub fn set_autostart(on: bool) {
     }
 }
 
-/// If autostart is on but the exe was moved, point the Run entry to the new location.
+/// Если автозапуск включён, а exe перенесли, обновить путь в записи Run.
 pub fn refresh_autostart_path() {
     if let Some(v) = autostart_value()
         && v.trim_matches('"') != exe_path()
@@ -380,7 +380,7 @@ pub fn reg_set_string(name: &str, val: &str) {
     }
 }
 
-/// Lower-case exe file name of a process, e.g. "chrome.exe".
+/// Имя exe-файла процесса строчными, например "chrome.exe".
 pub fn process_name(pid: u32) -> Option<String> {
     use windows_sys::Win32::System::Threading::*;
     unsafe {
@@ -400,7 +400,7 @@ pub fn process_name(pid: u32) -> Option<String> {
     }
 }
 
-/// %APPDATA%\Rozkladka\exceptions.txt — words that must not be corrected automatically.
+/// %APPDATA%\Rozkladka\exceptions.txt — слова, которые нельзя исправлять автоматически.
 fn exceptions_path() -> Option<std::path::PathBuf> {
     std::env::var_os("APPDATA").map(|d| std::path::Path::new(&d).join("Rozkladka").join("exceptions.txt"))
 }

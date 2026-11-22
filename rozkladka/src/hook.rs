@@ -1,8 +1,9 @@
-//! Low-level keyboard / mouse hooks running on their own thread.
+//! Низкоуровневые хуки клавиатуры и мыши в отдельном потоке.
 //!
-//! The hook only records keystrokes (scan code + Shift/CapsLock + layout) and
-//! detects hotkeys; the actual work is posted to the main window so the hook
-//! callback stays fast.
+//! Хук только запоминает нажатия (скан-код + Shift/CapsLock + раскладка) и ловит
+//! горячие клавиши; основная работа передаётся главному окну, чтобы хук оставался быстрым.
+//! Исключение — исправление на лету: оно делается прямо в хуке, чтобы не перепутать
+//! порядок с клавишами, которые пользователь набирает дальше.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -49,7 +50,7 @@ pub struct Key {
     pub scan: u16,
     pub shift: bool,
     pub caps: bool,
-    /// Keyboard layout (HKL) that was active when the key was pressed.
+    /// Раскладка (HKL), активная в момент нажатия.
     pub hkl: isize,
 }
 
@@ -61,7 +62,7 @@ impl Key {
 
 pub struct Buffer {
     pub keys: Vec<Key>,
-    /// Incremented every time the user changes the buffer (used to detect repeated hotkey presses).
+    /// Растёт при каждом изменении буфера пользователем (чтобы узнавать повторное нажатие горячей клавиши).
     pub version: u64,
     last_hwnd: isize,
     caps: bool,
@@ -70,25 +71,25 @@ pub struct Buffer {
     shift_clean: bool,
     last_shift_tap: u32,
     pause_swallowed: bool,
-    /// Layout we just asked the foreground window to switch to (it may not have switched yet).
+    /// Раскладка, на которую мы только что попросили переключиться (окно могло ещё не успеть).
     pending: Option<(isize, u32)>,
-    /// The last automatic correction, so that Pause can undo it.
+    /// Последнее автоисправление — чтобы Pause мог его отменить.
     pub undo: Option<AutoUndo>,
 }
 
 pub struct AutoUndo {
-    /// Buffer version right after the correction (any further typing invalidates the undo).
+    /// Версия буфера сразу после исправления (любой дальнейший набор отменяет возможность отмены).
     pub version: u64,
-    /// Corrected keys are `keys[start..end]`, followed by the space at `end`.
+    /// Исправленные клавиши — `keys[start..end]`, за ними пробел в позиции `end`.
     pub start: usize,
     pub end: usize,
     pub from: isize,
-    /// The word as originally typed (normalized) — added to the exceptions on undo.
+    /// Слово в исходном виде (нормализованное) — при отмене попадает в исключения.
     pub word: String,
 }
 
 impl Buffer {
-    /// Remember that we requested a layout switch (keys typed right after still use `hkl`).
+    /// Запомнить запрошенное переключение раскладки (клавиши сразу после него считаются в `hkl`).
     pub fn set_pending(&mut self, hkl: isize) {
         self.pending = Some((hkl, unsafe { GetTickCount() }));
     }
@@ -117,13 +118,13 @@ pub static BUF: Mutex<Buffer> = Mutex::new(Buffer {
 
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
 pub static DOUBLE_SHIFT: AtomicBool = AtomicBool::new(true);
-/// On-the-fly correction: 0 = off, 1 = between all languages, 0x100 | primary LANGID = into one language.
+/// Исправление на лету: 0 — выкл, 1 — между всеми языками, 0x100 | основной LANGID — всё в один язык.
 pub static AUTO_MODE: AtomicU32 = AtomicU32::new(1);
-/// Preferred Cyrillic language (primary LANGID) when Ukrainian and Russian both fit.
+/// Предпочтительный кириллический язык (основной LANGID), когда подходят и украинский, и русский.
 pub static AUTO_PREF: AtomicU32 = AtomicU32::new(0x22);
-/// Words the user rejected (undid with Pause) — never corrected automatically again.
+/// Слова, которые пользователь отклонил (отменил через Pause), — больше не исправляются автоматически.
 pub static EXCEPTIONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
-/// Programs (lower-case exe names) where on-the-fly correction is disabled.
+/// Программы (имена exe строчными), где исправление на лету выключено.
 pub static EXCLUDED_APPS: RwLock<Vec<String>> = RwLock::new(Vec::new());
 pub static EXCLUDED_GEN: AtomicU32 = AtomicU32::new(0);
 
@@ -156,12 +157,12 @@ pub fn foreground_layout() -> (isize, isize) {
     }
 }
 
-/// Returns true if the key event must be swallowed.
+/// Возвращает true, если нажатие нужно «проглотить».
 fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let vk = k.vkCode as u16;
     let Ok(mut b) = BUF.lock() else { return false };
 
-    // ---- hotkeys on Pause / Break --------------------------------------------------------
+    // ---- горячие клавиши на Pause / Break --------------------------------------------------------
     if vk == VK_PAUSE || vk == VK_CANCEL {
         b.shift_clean = false;
         b.last_shift_tap = 0;
@@ -187,7 +188,7 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         return true;
     }
 
-    // ---- modifiers -----------------------------------------------------------------------
+    // ---- модификаторы ---------------------------------------------------------------------------
     match vk {
         VK_SHIFT | VK_LSHIFT | VK_RSHIFT => {
             if down {
@@ -212,7 +213,7 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
             return false;
         }
         VK_CAPITAL => {
-            // Auto-repeat while CapsLock is held must not toggle it again.
+            // Автоповтор при зажатом CapsLock не должен переключать его снова.
             if down && !b.caps_held {
                 b.caps = !b.caps;
             }
@@ -235,7 +236,7 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     b.shift_clean = false;
     b.last_shift_tap = 0;
 
-    // ---- regular keys: remember what was typed --------------------------------------------
+    // ---- обычные клавиши: запоминаем набранное --------------------------------------------
     let (fg, hkl) = foreground_layout();
     if fg != b.last_hwnd {
         b.clear();
@@ -256,7 +257,7 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
     let scan = k.scanCode as u16;
     let extended = k.flags & LLKHF_EXTENDED != 0;
     if scan == SCAN_SPACE && !extended && try_autocorrect(&mut b) {
-        return true; // the space is retyped by the correction
+        return true; // пробел перепечатывается вместе с исправлением
     }
     if vk == VK_BACK {
         b.keys.pop();
@@ -269,7 +270,7 @@ fn on_key(k: &KBDLLHOOKSTRUCT, down: bool) -> bool {
         }
         b.version += 1;
     } else {
-        // Enter, Tab, arrows, Home/End, Delete, numpad ... — the text context is lost.
+        // Enter, Tab, стрелки, Home/End, Delete, цифровой блок … — контекст текста потерян.
         b.clear();
     }
     false
@@ -294,8 +295,8 @@ fn excluded_app(fg: isize) -> bool {
     })
 }
 
-/// Called when Space is pressed: if the word before it was typed in the wrong layout,
-/// erase it, type it in the right layout and switch the layout. Returns true if corrected.
+/// Вызывается при нажатии пробела: если слово перед ним набрано не в той раскладке —
+/// стереть его, напечатать в нужной и переключить раскладку. Возвращает true, если исправлено.
 fn try_autocorrect(b: &mut Buffer) -> bool {
     let mode = AUTO_MODE.load(Ordering::Relaxed);
     let n = b.keys.len();
@@ -329,7 +330,7 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
         if l.hkl == t_hkl || lang == t_lang || target.is_some_and(|p| p != l.primary) {
             continue;
         }
-        // One layout per language is enough.
+        // Достаточно одной раскладки на язык.
         if cand_layouts.iter().any(|c: &&crate::layouts::LayoutInfo| c.lang == Some(lang)) {
             continue;
         }
@@ -344,7 +345,7 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
     let g = cand_layouts[i];
     let g_lang = cand_texts[i].0;
 
-    // Also fix one-letter words typed just before in the same wrong layout ("z ns" -> "я ти").
+    // Также исправить однобуквенные слова перед ним в той же неверной раскладке ("z ns" -> "я ти").
     let mut start = s;
     for _ in 0..3 {
         let mut e = start;
@@ -384,7 +385,7 @@ unsafe extern "system" fn kb_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
     unsafe {
         if code == HC_ACTION as i32 && ENABLED.load(Ordering::Relaxed) {
             let k = &*(lparam as *const KBDLLHOOKSTRUCT);
-            // Our own SendInput events (and other programs' synthetic input) are ignored.
+            // Наши собственные события SendInput (и синтетический ввод других программ) игнорируются.
             if k.flags & LLKHF_INJECTED == 0 {
                 let down = wparam == WM_KEYDOWN as usize || wparam == WM_SYSKEYDOWN as usize;
                 if on_key(k, down) {

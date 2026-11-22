@@ -1,5 +1,5 @@
-//! Snapshot of the installed keyboard layouts, rendered into lookup tables so that the
-//! keyboard hook can re-render words without calling the Windows API.
+//! Снимок установленных раскладок в виде таблиц, чтобы хук клавиатуры мог
+//! перепечатывать слова без вызовов Windows API.
 
 use std::sync::RwLock;
 
@@ -11,7 +11,7 @@ pub struct LayoutInfo {
     pub hkl: isize,
     pub primary: u16,
     pub lang: Option<Lang>,
-    /// For every key in `SCANS`: [plain, shift, caps, shift+caps]; '\0' = no character.
+    /// Для каждой клавиши из `SCANS`: [обычно, shift, caps, shift+caps]; '\0' — нет символа.
     table: Vec<[char; 4]>,
 }
 
@@ -45,7 +45,7 @@ impl LayoutInfo {
 
 pub static LAYOUTS: RwLock<Vec<LayoutInfo>> = RwLock::new(Vec::new());
 
-/// Rebuild the tables if the set of installed layouts changed.
+/// Перестроить таблицы, если набор установленных раскладок изменился.
 pub fn refresh(installed: &[isize]) {
     let same = LAYOUTS.read().map(|l| l.iter().map(|i| i.hkl).eq(installed.iter().copied())).unwrap_or(false);
     if same {

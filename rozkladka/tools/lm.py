@@ -1,4 +1,4 @@
-"""Shared helpers: keyboard tables, alphabets and the trigram model (mirrors src/keymap.rs / src/auto.rs)."""
+"""Общие функции: таблицы раскладок, алфавиты и триграммная модель (как в src/keymap.rs / src/auto.rs)."""
 import math, collections
 
 SCANS = [0x29] + list(range(0x02, 0x0E)) + list(range(0x10, 0x1C)) + list(range(0x1E, 0x29)) + [0x2B] + list(range(0x2C, 0x36))
@@ -7,7 +7,7 @@ LAYOUTS = {
     "uk": ("'1234567890-=йцукенгшщзхїфівапролджєґячсмитьбю.", "₴!\"№;%:?*()_+ЙЦУКЕНГШЩЗХЇФІВАПРОЛДЖЄҐЯЧСМИТЬБЮ,"),
     "ru": ("ё1234567890-=йцукенгшщзхъфывапролджэ\\ячсмитьбю.", "Ё!\"№;%:?*()_+ЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭ/ЯЧСМИТЬБЮ,"),
 }
-# Model alphabets; index 0 is the word boundary.
+# Алфавиты моделей; индекс 0 — граница слова.
 ALPHA = {
     "en": "_abcdefghijklmnopqrstuvwxyz'",
     "uk": "_абвгґдеєжзиіїйклмнопрстуфхцчшщьюя'",
@@ -66,7 +66,7 @@ def train(lang, words):
         s = [0, 0] + [idx[ch] for ch in w] + [0]
         for i in range(len(s) - 2):
             cnt[(s[i] * n + s[i + 1]) * n + s[i + 2]] += weight
-    # conditional P(c | a b) with add-k smoothing, quantized to u8: q = round(-log2(p) * 8), capped
+    # условная P(c | a b) со сглаживанием add-k, квантуется в u8: q = round(-log2(p) * 8), с ограничением
     q = bytearray(n ** 3)
     for ab in range(n * n):
         row = cnt[ab * n:(ab + 1) * n]
@@ -77,7 +77,7 @@ def train(lang, words):
     return q
 
 def score(lang, q, w):
-    """Average -log2 P per symbol (lower = more plausible)."""
+    """Среднее -log2 P на символ (меньше — правдоподобнее)."""
     a = ALPHA[lang]; n = len(a)
     idx = {c: i for i, c in enumerate(a)}
     s = [0, 0] + [idx[ch] for ch in w] + [0]
