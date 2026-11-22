@@ -1,0 +1,28 @@
+name: Rozkladka (Windows .exe)
+
+on:
+  push:
+    paths: ["rozkladka/**", ".github/workflows/rozkladka.yml"]
+  pull_request:
+    paths: ["rozkladka/**", ".github/workflows/rozkladka.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: rozkladka
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins Rust 1.100; rustup installs it automatically.
+      - run: rustc --version
+      - run: cargo test
+      - run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rozkladka-exe
+          path: rozkladka/target/release/rozkladka.exe

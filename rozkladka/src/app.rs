@@ -1,0 +1,662 @@
+//! Main thread: hidden window, tray icon, settings and the hotkey actions.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ptr::{null, null_mut};
+use std::sync::atomic::Ordering;
+use std::thread::sleep;
+use std::time::Duration;
+
+use windows_sys::Win32::Foundation::*;
+use windows_sys::Win32::Globalization::GetLocaleInfoW;
+use windows_sys::Win32::Graphics::Gdi::*;
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
+use windows_sys::Win32::System::Threading::CreateMutexW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
+use windows_sys::Win32::UI::Shell::*;
+use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+use crate::convert;
+use crate::hook::{self, Action, WM_APP_ACTION};
+use crate::keymap::{KeyMap, WinMap};
+use crate::sys::{self, wide};
+
+const WM_APP_TRAY: u32 = WM_APP + 2;
+const TIMER_ID: usize = 1;
+
+const ID_ENABLED: usize = 1;
+const ID_DOUBLE_SHIFT: usize = 2;
+const ID_AUTOSTART: usize = 3;
+const ID_HELP: usize = 4;
+const ID_EXIT: usize = 5;
+
+const APP_TITLE: &str = "Rozkladka";
+
+const HELP: &str = "Rozkladka — исправление текста, набранного не в той раскладке.\n\n\
+Pause — исправить последнее слово\n      (нажмите ещё раз — следующая раскладка: EN → UA → RU …)\n\
+Двойной Shift — то же самое (для ноутбуков без Pause)\n\
+Ctrl+Pause (Break) — исправить всю последнюю фразу\n\
+Shift+Pause — исправить выделенный текст\n\
+Alt+Pause — иНВЕРСИЯ рЕГИСТРА (забытый CapsLock)\n\
+Alt+Shift+Pause — строчные → ПРОПИСНЫЕ → Каждое Слово\n\
+Ctrl+Shift+Pause — транслитерация (Привіт ↔ Pryvit)\n\n\
+Без выделения Alt/Ctrl+Shift-команды работают с последним словом.\n\
+Работает с любыми установленными раскладками Windows.\n\
+Двойной клик по иконке в трее — включить / выключить.";
+
+#[derive(PartialEq)]
+enum SessionKey {
+    Buffer { version: u64, start: usize, len: usize },
+    Selection(String),
+}
+
+/// Remembers the last conversion so that pressing the hotkey again cycles to the next layout.
+struct Session {
+    key: SessionKey,
+    cur: isize,
+    seq: Vec<isize>,
+    pos: usize,
+}
+
+struct App {
+    hwnd: HWND,
+    shown: (isize, bool),
+    icons: HashMap<(u16, bool), HICON>,
+    last_used: HashMap<isize, u32>,
+    session: Option<Session>,
+    taskbar_created: u32,
+    tray_added: bool,
+}
+
+thread_local! {
+    static APP: RefCell<App> = RefCell::new(App {
+        hwnd: null_mut(),
+        shown: (0, true),
+        icons: HashMap::new(),
+        last_used: HashMap::new(),
+        session: None,
+        taskbar_created: 0,
+        tray_added: false,
+    });
+}
+
+fn hwnd() -> HWND {
+    APP.with(|a| a.borrow().hwnd)
+}
+
+fn last_used(hkl: isize) -> u32 {
+    APP.with(|a| a.borrow().last_used.get(&hkl).copied().unwrap_or(0))
+}
+
+fn primary_lang(hkl: isize) -> u16 {
+    (hkl as usize & 0x3FF) as u16
+}
+
+// =============================================================================================
+// Layout logic
+// =============================================================================================
+
+/// Rough "script" of a layout: 1 = Latin, 2 = Cyrillic, other = the character itself.
+fn script_of(hkl: isize) -> u32 {
+    match WinMap::new(hkl).render(0x1E, false, false) {
+        Some(c) if c.is_ascii_alphabetic() => 1,
+        Some(c) if ('\u{0400}'..='\u{04FF}').contains(&c) => 2,
+        Some(c) => c as u32,
+        None => 0,
+    }
+}
+
+/// Order in which layouts are tried when converting text typed in `src`:
+/// first the most recently used layout of a *different* script (Latin <-> Cyrillic),
+/// then all other installed layouts, and finally back to `src`.
+fn build_seq(src: isize) -> Vec<isize> {
+    let list = sys::installed_layouts();
+    let others: Vec<isize> = list.iter().copied().filter(|&h| h != src).collect();
+    if others.is_empty() {
+        return Vec::new();
+    }
+    let ss = script_of(src);
+    let mut best: Option<(isize, u32)> = None;
+    for &h in &others {
+        if script_of(h) != ss {
+            let t = last_used(h);
+            if best.is_none_or(|(_, bt)| t > bt) {
+                best = Some((h, t));
+            }
+        }
+    }
+    let preferred = best.map(|b| b.0).unwrap_or(others[0]);
+    let mut seq = vec![preferred];
+    seq.extend(others.iter().copied().filter(|&h| h != preferred));
+    seq.push(src);
+    seq
+}
+
+/// Guess which installed layout the text was typed in.
+fn detect_source(text: &str) -> isize {
+    let (_, fg_hkl) = hook::foreground_layout();
+    let mut best = (0usize, false, 0u32, fg_hkl);
+    for h in sys::installed_layouts() {
+        let score = convert::layout_score(text, &WinMap::new(h));
+        let cand = (score, h == fg_hkl, last_used(h), h);
+        if (cand.0, cand.1, cand.2) > (best.0, best.1, best.2) {
+            best = cand;
+        }
+    }
+    best.3
+}
+
+/// Returns (from, to) layouts for this conversion, continuing the previous session if it matches.
+fn next_layouts(key: SessionKey, src: impl FnOnce() -> isize) -> Option<(isize, isize)> {
+    APP.with(|a| {
+        let mut a = a.borrow_mut();
+        if let Some(s) = a.session.as_mut()
+            && s.key == key
+        {
+            let from = s.cur;
+            s.pos = (s.pos + 1) % s.seq.len();
+            s.cur = s.seq[s.pos];
+            return Some((from, s.cur));
+        }
+        drop(a);
+        let src = src();
+        let seq = build_seq(src);
+        let first = *seq.first()?;
+        APP.with(|a| a.borrow_mut().session = Some(Session { key, cur: first, seq, pos: 0 }));
+        Some((src, first))
+    })
+}
+
+fn set_session_key(key: SessionKey) {
+    APP.with(|a| {
+        if let Some(s) = a.borrow_mut().session.as_mut() {
+            s.key = key;
+        }
+    });
+}
+
+/// Should transliteration / ambiguous text prefer Ukrainian over Russian?
+fn prefer_uk() -> bool {
+    let mut cyr: Vec<(u32, u16)> = APP.with(|a| {
+        a.borrow().last_used.iter().map(|(&h, &t)| (t, primary_lang(h))).filter(|&(_, l)| l == 0x22 || l == 0x19).collect()
+    });
+    cyr.sort();
+    if let Some(&(_, l)) = cyr.last() {
+        return l == 0x22;
+    }
+    let installed: Vec<u16> = sys::installed_layouts().into_iter().map(primary_lang).collect();
+    installed.contains(&0x22) || !installed.contains(&0x19)
+}
+
+// =============================================================================================
+// Actions
+// =============================================================================================
+
+/// Number of characters of the last word (+ trailing spaces) in the typing buffer.
+fn last_word_len() -> usize {
+    let Ok(b) = hook::BUF.lock() else { return 0 };
+    let n = b.keys.len();
+    let mut end = n;
+    while end > 0 && b.keys[end - 1].is_space() {
+        end -= 1;
+    }
+    let mut start = end;
+    while start > 0 && !b.keys[start - 1].is_space() {
+        start -= 1;
+    }
+    if end == start { 0 } else { n - start }
+}
+
+/// Retype the last word (or the whole phrase) from the recorded keystrokes in the next layout.
+fn convert_buffer(phrase: bool) {
+    let job = {
+        let Ok(mut b) = hook::BUF.lock() else { return };
+        let n = b.keys.len();
+        let mut end = n;
+        while end > 0 && b.keys[end - 1].is_space() {
+            end -= 1;
+        }
+        if end == 0 {
+            return;
+        }
+        let mut start = 0;
+        if !phrase {
+            start = end;
+            while start > 0 && !b.keys[start - 1].is_space() {
+                start -= 1;
+            }
+        }
+        let key = SessionKey::Buffer { version: b.version, start, len: n };
+        let src = b.keys[end - 1].hkl;
+        let Some((_, target)) = next_layouts(key, || src) else { return };
+        let to = WinMap::new(target);
+        let mut out = String::new();
+        for k in &b.keys[start..n] {
+            let c = to
+                .render(k.scan, k.shift, k.caps)
+                .or_else(|| WinMap::new(k.hkl).render(k.scan, k.shift, k.caps))
+                .unwrap_or('?');
+            out.push(c);
+        }
+        for k in &mut b.keys[start..n] {
+            k.hkl = target;
+        }
+        (n - start, out, target)
+    };
+    let (erase, out, target) = job;
+    sys::backspaces(erase);
+    sys::activate_layout(target);
+    sys::type_text(&out);
+}
+
+fn transform(action: Action, text: &str) -> Option<(String, Option<isize>)> {
+    match action {
+        Action::ConvertSelection => {
+            let (from, to) = next_layouts(SessionKey::Selection(text.to_string()), || detect_source(text))?;
+            let out = convert::convert_text(text, &WinMap::new(from), &WinMap::new(to));
+            set_session_key(SessionKey::Selection(out.clone()));
+            Some((out, Some(to)))
+        }
+        Action::InvertCase => Some((convert::invert_case(text), None)),
+        Action::CycleCase => Some((convert::cycle_case(text), None)),
+        Action::Translit => Some((convert::translit(text, prefer_uk()), None)),
+        _ => None,
+    }
+}
+
+/// Editors like VS Code copy the whole line when nothing is selected.
+fn looks_like_line_copy(t: &str) -> bool {
+    t.ends_with('\n') && !t.trim_end_matches(['\r', '\n']).contains('\n')
+}
+
+fn selection_action(action: Action, allow_fallback: bool) {
+    let hwnd = hwnd();
+    let saved = sys::save_clipboard(hwnd);
+    let seq = sys::clipboard_seq();
+    sys::tap_combo(VK_LCONTROL, VK_INSERT); // copy (safer than Ctrl+C in terminals)
+    let mut text = None;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(10));
+        if sys::clipboard_seq() != seq {
+            sleep(Duration::from_millis(20));
+            text = sys::clipboard_text(hwnd);
+            break;
+        }
+    }
+    let word_len = last_word_len();
+    let text = text.filter(|t| !t.is_empty() && !(word_len > 0 && looks_like_line_copy(t)));
+
+    let Some(text) = text else {
+        if sys::clipboard_seq() != seq {
+            sys::restore_clipboard(hwnd, saved);
+        }
+        if !allow_fallback {
+            return;
+        }
+        // Nothing selected: work on the last typed word.
+        if action == Action::ConvertSelection {
+            convert_buffer(false);
+        } else if word_len > 0 {
+            sys::select_left(word_len);
+            sleep(Duration::from_millis(30));
+            selection_action(action, false);
+        }
+        return;
+    };
+
+    if let Some((out, layout)) = transform(action, &text)
+        && out != text
+    {
+        sys::set_clipboard_text(hwnd, &out);
+        sys::tap_combo(VK_LSHIFT, VK_INSERT); // paste
+        if let Some(h) = layout {
+            sys::activate_layout(h);
+        }
+        // Keep the result selected so the hotkey can be pressed again.
+        let n = out.chars().filter(|&c| c != '\r').count();
+        if n <= 3000 {
+            sys::select_left(n);
+        }
+        hook::clear_buffer();
+    }
+    sleep(Duration::from_millis(350));
+    sys::restore_clipboard(hwnd, saved);
+}
+
+fn do_action(action: Action) {
+    sys::release_modifiers();
+    match action {
+        Action::ConvertWord => convert_buffer(false),
+        Action::ConvertPhrase => convert_buffer(true),
+        _ => selection_action(action, true),
+    }
+}
+
+// =============================================================================================
+// Tray icon
+// =============================================================================================
+
+fn lang_label(hkl: isize) -> String {
+    let langid = (hkl as usize & 0xFFFF) as u32;
+    match langid & 0x3FF {
+        0x09 => return "EN".into(),
+        0x22 => return "UA".into(),
+        0x19 => return "RU".into(),
+        _ => {}
+    }
+    let mut buf = [0u16; 16];
+    let n = unsafe { GetLocaleInfoW(langid, 0x59 /* LOCALE_SISO639LANGNAME */, buf.as_mut_ptr(), buf.len() as i32) };
+    if n > 1 {
+        String::from_utf16_lossy(&buf[..(n - 1) as usize]).to_uppercase().chars().take(3).collect()
+    } else {
+        "??".into()
+    }
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> u32 {
+    r as u32 | (g as u32) << 8 | (b as u32) << 16
+}
+
+fn make_icon(label: &str, bg: u32, fg: u32) -> HICON {
+    unsafe {
+        let size = GetSystemMetrics(SM_CXSMICON).max(16);
+        let screen = GetDC(null_mut());
+        let dc = CreateCompatibleDC(screen);
+        let mut bi: BITMAPINFO = std::mem::zeroed();
+        bi.bmiHeader.biSize = std::mem::size_of::<BITMAPINFOHEADER>() as u32;
+        bi.bmiHeader.biWidth = size;
+        bi.bmiHeader.biHeight = -size;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        let mut bits: *mut core::ffi::c_void = null_mut();
+        let color = CreateDIBSection(dc, &bi, DIB_RGB_COLORS, &mut bits, null_mut(), 0);
+        let old = SelectObject(dc, color);
+
+        let rect = RECT { left: 0, top: 0, right: size, bottom: size };
+        let brush = CreateSolidBrush(bg);
+        FillRect(dc, &rect, brush);
+        DeleteObject(brush);
+
+        let face = wide("Segoe UI");
+        let height = if label.chars().count() > 2 { size * 9 / 16 } else { size * 11 / 16 };
+        let font = CreateFontW(-height, 0, 0, 0, FW_BOLD as i32, 0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32, ANTIALIASED_QUALITY as u32, 0, face.as_ptr());
+        let old_font = SelectObject(dc, font);
+        SetBkMode(dc, TRANSPARENT as _);
+        SetTextColor(dc, fg);
+        let mut text = wide(label);
+        let mut r = rect;
+        DrawTextW(dc, text.as_mut_ptr(), -1, &mut r, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        GdiFlush();
+
+        // Opaque everywhere except slightly rounded corners.
+        let px = std::slice::from_raw_parts_mut(bits as *mut u32, (size * size) as usize);
+        let s = size as usize;
+        for y in 0..s {
+            for x in 0..s {
+                let corner = (x == 0 || x == s - 1) && (y == 0 || y == s - 1);
+                px[y * s + x] = if corner { 0 } else { px[y * s + x] | 0xFF00_0000 };
+            }
+        }
+
+        SelectObject(dc, old_font);
+        DeleteObject(font);
+        SelectObject(dc, old);
+        let mask = CreateBitmap(size, size, 1, 1, null());
+        let info = ICONINFO { fIcon: 1, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
+        let icon = CreateIconIndirect(&info);
+        DeleteObject(mask);
+        DeleteObject(color);
+        DeleteDC(dc);
+        ReleaseDC(null_mut(), screen);
+        icon
+    }
+}
+
+fn icon_for(hkl: isize, enabled: bool) -> HICON {
+    let key = ((hkl as usize & 0xFFFF) as u16, enabled);
+    if let Some(i) = APP.with(|a| a.borrow().icons.get(&key).copied()) {
+        return i;
+    }
+    let label = lang_label(hkl);
+    let (bg, fg) = if !enabled {
+        (rgb(150, 150, 150), rgb(240, 240, 240))
+    } else {
+        match label.as_str() {
+            "EN" => (rgb(32, 96, 160), rgb(255, 255, 255)),
+            "UA" => (rgb(0, 87, 183), rgb(255, 213, 0)),
+            "RU" => (rgb(170, 40, 40), rgb(255, 255, 255)),
+            _ => (rgb(70, 70, 70), rgb(255, 255, 255)),
+        }
+    };
+    let icon = make_icon(&label, bg, fg);
+    APP.with(|a| a.borrow_mut().icons.insert(key, icon));
+    icon
+}
+
+fn copy_wstr(dst: &mut [u16], s: &str) {
+    let w: Vec<u16> = s.encode_utf16().take(dst.len() - 1).collect();
+    dst[..w.len()].copy_from_slice(&w);
+    dst[w.len()] = 0;
+}
+
+fn tray_data(hkl: isize, enabled: bool) -> NOTIFYICONDATAW {
+    let mut nid: NOTIFYICONDATAW = unsafe { std::mem::zeroed() };
+    nid.cbSize = std::mem::size_of::<NOTIFYICONDATAW>() as u32;
+    nid.hWnd = hwnd();
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_APP_TRAY;
+    nid.hIcon = icon_for(hkl, enabled);
+    let tip = format!("{APP_TITLE} — {}{}", lang_label(hkl), if enabled { "" } else { " (выключено)" });
+    copy_wstr(&mut nid.szTip, &tip);
+    nid
+}
+
+fn update_tray(add: bool) {
+    let (_, hkl) = hook::foreground_layout();
+    let hkl = if hkl == 0 { APP.with(|a| a.borrow().shown.0) } else { hkl };
+    let enabled = hook::ENABLED.load(Ordering::Relaxed);
+    let nid = tray_data(hkl, enabled);
+    let ok = unsafe { Shell_NotifyIconW(if add { NIM_ADD } else { NIM_MODIFY }, &nid) } != 0;
+    APP.with(|a| {
+        let mut a = a.borrow_mut();
+        a.shown = (hkl, enabled);
+        if add {
+            a.tray_added = ok;
+        }
+    });
+}
+
+fn balloon(title: &str, text: &str) {
+    let (hkl, enabled) = APP.with(|a| a.borrow().shown);
+    let mut nid = tray_data(hkl, enabled);
+    nid.uFlags = NIF_INFO;
+    nid.dwInfoFlags = NIIF_INFO;
+    copy_wstr(&mut nid.szInfoTitle, title);
+    copy_wstr(&mut nid.szInfo, text);
+    unsafe {
+        Shell_NotifyIconW(NIM_MODIFY, &nid);
+    }
+}
+
+fn on_timer() {
+    // At logon Explorer may not be ready yet when we start: retry adding the icon.
+    if !APP.with(|a| a.borrow().tray_added) {
+        update_tray(true);
+    }
+    let (fg, hkl) = hook::foreground_layout();
+    if fg == 0 || fg == hwnd() as isize || hkl == 0 {
+        return;
+    }
+    let enabled = hook::ENABLED.load(Ordering::Relaxed);
+    let changed = APP.with(|a| {
+        let mut a = a.borrow_mut();
+        a.last_used.insert(hkl, unsafe { GetTickCount() });
+        a.shown != (hkl, enabled)
+    });
+    if changed {
+        update_tray(false);
+    }
+}
+
+fn set_enabled(on: bool) {
+    hook::ENABLED.store(on, Ordering::Relaxed);
+    hook::clear_buffer();
+    sys::reg_set_dword("Enabled", on as u32);
+    update_tray(false);
+}
+
+fn show_menu() {
+    let hwnd = hwnd();
+    unsafe {
+        let menu = CreatePopupMenu();
+        let check = |on: bool| if on { MF_CHECKED } else { MF_UNCHECKED };
+        let items: [(usize, String, u32); 3] = [
+            (ID_ENABLED, "Включено".into(), check(hook::ENABLED.load(Ordering::Relaxed))),
+            (ID_DOUBLE_SHIFT, "Двойной Shift = исправить слово".into(), check(hook::DOUBLE_SHIFT.load(Ordering::Relaxed))),
+            (ID_AUTOSTART, "Автозапуск с Windows".into(), check(sys::autostart_enabled())),
+        ];
+        for (id, text, flags) in items {
+            let w = wide(&text);
+            AppendMenuW(menu, MF_STRING | flags, id, w.as_ptr());
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let w = wide("Горячие клавиши…");
+        AppendMenuW(menu, MF_STRING, ID_HELP, w.as_ptr());
+        AppendMenuW(menu, MF_SEPARATOR, 0, null());
+        let w = wide("Выход");
+        AppendMenuW(menu, MF_STRING, ID_EXIT, w.as_ptr());
+
+        let mut pt = POINT { x: 0, y: 0 };
+        GetCursorPos(&mut pt);
+        SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN, pt.x, pt.y, 0, hwnd, null());
+        PostMessageW(hwnd, WM_NULL, 0, 0);
+        DestroyMenu(menu);
+
+        match cmd as usize {
+            ID_ENABLED => set_enabled(!hook::ENABLED.load(Ordering::Relaxed)),
+            ID_DOUBLE_SHIFT => {
+                let on = !hook::DOUBLE_SHIFT.load(Ordering::Relaxed);
+                hook::DOUBLE_SHIFT.store(on, Ordering::Relaxed);
+                sys::reg_set_dword("DoubleShift", on as u32);
+            }
+            ID_AUTOSTART => sys::set_autostart(!sys::autostart_enabled()),
+            ID_HELP => sys::message_box(HELP, APP_TITLE, MB_OK | MB_ICONINFORMATION),
+            ID_EXIT => {
+                DestroyWindow(hwnd);
+            }
+            _ => {}
+        }
+    }
+}
+
+unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_APP_ACTION => {
+                if hook::ENABLED.load(Ordering::Relaxed)
+                    && let Some(a) = Action::from_usize(wparam)
+                {
+                    do_action(a);
+                }
+                0
+            }
+            WM_APP_TRAY => {
+                match lparam as u32 {
+                    WM_RBUTTONUP | WM_CONTEXTMENU => show_menu(),
+                    WM_LBUTTONDBLCLK => set_enabled(!hook::ENABLED.load(Ordering::Relaxed)),
+                    _ => {}
+                }
+                0
+            }
+            WM_TIMER => {
+                on_timer();
+                0
+            }
+            WM_DESTROY => {
+                let nid = tray_data(0, true);
+                Shell_NotifyIconW(NIM_DELETE, &nid);
+                PostQuitMessage(0);
+                0
+            }
+            _ => {
+                if msg != 0 && msg == APP.with(|a| a.borrow().taskbar_created) {
+                    update_tray(true); // Explorer restarted
+                    return 0;
+                }
+                DefWindowProcW(hwnd, msg, wparam, lparam)
+            }
+        }
+    }
+}
+
+pub fn run() {
+    unsafe {
+        SetProcessDPIAware();
+
+        let mutex_name = wide("Local\\Rozkladka-single-instance");
+        let _mutex = CreateMutexW(null(), 0, mutex_name.as_ptr());
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            sys::message_box("Rozkladka уже запущена — иконка в трее (возле часов).", APP_TITLE, MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+
+        // Settings
+        hook::ENABLED.store(sys::reg_get_dword("Enabled").unwrap_or(1) != 0, Ordering::Relaxed);
+        hook::DOUBLE_SHIFT.store(sys::reg_get_dword("DoubleShift").unwrap_or(1) != 0, Ordering::Relaxed);
+        let first_run = sys::reg_get_dword("Initialized").is_none();
+        if first_run {
+            sys::set_autostart(true);
+            sys::reg_set_dword("Initialized", 1);
+        } else {
+            sys::refresh_autostart_path();
+        }
+
+        let hinst = GetModuleHandleW(null());
+        let class = wide("RozkladkaWindow");
+        let wc = WNDCLASSW {
+            style: 0,
+            lpfnWndProc: Some(wndproc),
+            cbClsExtra: 0,
+            cbWndExtra: 0,
+            hInstance: hinst,
+            hIcon: null_mut(),
+            hCursor: null_mut(),
+            hbrBackground: null_mut(),
+            lpszMenuName: null(),
+            lpszClassName: class.as_ptr(),
+        };
+        RegisterClassW(&wc);
+        let title = wide(APP_TITLE);
+        let hwnd = CreateWindowExW(0, class.as_ptr(), title.as_ptr(), 0, 0, 0, 0, 0, null_mut(), null_mut(), hinst, null());
+        if hwnd.is_null() {
+            return;
+        }
+        let tc = wide("TaskbarCreated");
+        let taskbar_created = RegisterWindowMessageW(tc.as_ptr());
+        APP.with(|a| {
+            let mut a = a.borrow_mut();
+            a.hwnd = hwnd;
+            a.taskbar_created = taskbar_created;
+        });
+
+        update_tray(true);
+        hook::start(hwnd);
+        SetTimer(hwnd, TIMER_ID, 250, None);
+
+        if first_run {
+            balloon(
+                "Rozkladka запущена",
+                "Pause или двойной Shift — исправить слово.\nShift+Pause — выделенный текст.\nПравый клик по иконке — настройки.",
+            );
+        }
+
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+    }
+}
