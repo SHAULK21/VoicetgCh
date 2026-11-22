@@ -19,7 +19,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 use crate::auto::{self, Lang};
 use crate::keymap::{SCAN_SPACE, is_char_scan};
-use crate::layouts::LAYOUTS;
+use crate::layouts::{LAYOUTS, is_virtual};
 use crate::sys;
 
 pub const WM_APP_ACTION: u32 = WM_APP + 1;
@@ -330,6 +330,10 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
         if l.hkl == t_hkl || lang == t_lang || target.is_some_and(|p| p != l.primary) {
             continue;
         }
+        // Неустановленные раскладки — только когда язык выбран целевым явно.
+        if is_virtual(l.hkl) && target.is_none() {
+            continue;
+        }
         // Достаточно одной раскладки на язык.
         if cand_layouts.iter().any(|c: &&crate::layouts::LayoutInfo| c.lang == Some(lang)) {
             continue;
@@ -369,14 +373,19 @@ fn try_autocorrect(b: &mut Buffer) -> bool {
 
     sys::backspaces(n - start);
     sys::type_text(&format!("{out} "));
-    sys::activate_layout(g_hkl);
-
-    for k in &mut b.keys[start..n] {
-        k.hkl = g_hkl;
+    // Если целевая раскладка не установлена, переключать нечего: клавиши так и остаются
+    // набранными в раскладке T, а следующие слова будут так же перепечатываться.
+    let real = !is_virtual(g_hkl);
+    if real {
+        sys::activate_layout(g_hkl);
+        for k in &mut b.keys[start..n] {
+            k.hkl = g_hkl;
+        }
+        b.set_pending(g_hkl);
     }
-    b.keys.push(Key { scan: SCAN_SPACE, shift: false, caps: b.caps, hkl: g_hkl });
+    let space_hkl = if real { g_hkl } else { t_hkl };
+    b.keys.push(Key { scan: SCAN_SPACE, shift: false, caps: b.caps, hkl: space_hkl });
     b.version += 1;
-    b.set_pending(g_hkl);
     b.undo = Some(AutoUndo { version: b.version, start, end: n, from: t_hkl, word: t_norm });
     true
 }

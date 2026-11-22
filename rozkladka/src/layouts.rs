@@ -5,7 +5,7 @@ use std::sync::RwLock;
 
 use crate::auto::Lang;
 use crate::hook::Key;
-use crate::keymap::{KeyMap, SCAN_SPACE, SCANS, WinMap};
+use crate::keymap::{Builtin, KeyMap, SCAN_SPACE, SCANS, WinMap};
 
 pub struct LayoutInfo {
     pub hkl: isize,
@@ -15,9 +15,23 @@ pub struct LayoutInfo {
     table: Vec<[char; 4]>,
 }
 
+/// «Виртуальная» раскладка для языка, раскладка которого не установлена в Windows:
+/// у неё отрицательный hkl, переключиться на неё нельзя, но печатать её буквами можно.
+pub fn is_virtual(hkl: isize) -> bool {
+    hkl < 0
+}
+
 impl LayoutInfo {
     fn build(hkl: isize) -> Self {
-        let map = WinMap::new(hkl);
+        Self::from_map(hkl, (hkl as usize & 0x3FF) as u16, &WinMap::new(hkl))
+    }
+
+    fn build_virtual(primary: u16) -> Option<Self> {
+        let map = Builtin::for_primary_lang(primary)?;
+        Some(Self::from_map(-(primary as isize), primary, &map))
+    }
+
+    fn from_map(hkl: isize, primary: u16, map: &dyn KeyMap) -> Self {
         let table = SCANS
             .iter()
             .map(|&s| {
@@ -25,7 +39,6 @@ impl LayoutInfo {
                 [r(false, false), r(true, false), r(false, true), r(true, true)]
             })
             .collect();
-        let primary = (hkl as usize & 0x3FF) as u16;
         LayoutInfo { hkl, primary, lang: Lang::from_primary(primary), table }
     }
 
@@ -47,11 +60,21 @@ pub static LAYOUTS: RwLock<Vec<LayoutInfo>> = RwLock::new(Vec::new());
 
 /// Перестроить таблицы, если набор установленных раскладок изменился.
 pub fn refresh(installed: &[isize]) {
-    let same = LAYOUTS.read().map(|l| l.iter().map(|i| i.hkl).eq(installed.iter().copied())).unwrap_or(false);
+    let same = LAYOUTS
+        .read()
+        .map(|l| l.iter().filter(|i| !is_virtual(i.hkl)).map(|i| i.hkl).eq(installed.iter().copied()))
+        .unwrap_or(false);
     if same {
         return;
     }
-    let infos: Vec<LayoutInfo> = installed.iter().map(|&h| LayoutInfo::build(h)).collect();
+    let mut infos: Vec<LayoutInfo> = installed.iter().map(|&h| LayoutInfo::build(h)).collect();
+    for p in [0x09u16, 0x22, 0x19] {
+        if !infos.iter().any(|i| i.primary == p)
+            && let Some(v) = LayoutInfo::build_virtual(p)
+        {
+            infos.push(v);
+        }
+    }
     if let Ok(mut l) = LAYOUTS.write() {
         *l = infos;
     }

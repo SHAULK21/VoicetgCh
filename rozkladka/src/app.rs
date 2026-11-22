@@ -17,7 +17,6 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::*;
 use windows_sys::Win32::UI::Shell::*;
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
-use crate::auto;
 use crate::convert;
 use crate::hook::{self, AUTO_ALL, AUTO_OFF, Action, WM_APP_ACTION};
 use crate::layouts;
@@ -38,9 +37,9 @@ const ID_AUTO_ALL: usize = 11;
 /// ID_AUTO_TARGET + основной LANGID = «всё в этот язык».
 const ID_AUTO_TARGET: usize = 0x1000;
 
-const APP_TITLE: &str = "Rozkladka";
+const APP_TITLE: &str = "Раскладка";
 
-const HELP: &str = "Rozkladka — исправление текста, набранного не в той раскладке.\n\n\
+const HELP: &str = "Раскладка — исправление текста, набранного не в той раскладке.\n\n\
 НА ЛЕТУ (меню → «Исправлять на лету»): слово, набранное не в той раскладке, исправляется\n\
 само после пробела, и раскладка переключается. Можно выбрать целевой язык\n\
 («Всё на украинский» и т.п.) или режим «между всеми языками».\n\
@@ -380,9 +379,16 @@ fn do_action(action: Action) {
 fn lang_label(hkl: isize) -> String {
     let langid = (hkl as usize & 0xFFFF) as u32;
     match langid & 0x3FF {
-        0x09 => return "EN".into(),
-        0x22 => return "UA".into(),
-        0x19 => return "RU".into(),
+        0x09 => return "АНГ".into(),
+        0x22 => return "УКР".into(),
+        0x19 => return "РУС".into(),
+        0x23 => return "БЕЛ".into(),
+        0x07 => return "НЕМ".into(),
+        0x15 => return "ПОЛ".into(),
+        0x0C => return "ФРА".into(),
+        0x0A => return "ИСП".into(),
+        0x10 => return "ИТА".into(),
+        0x3F => return "КАЗ".into(),
         _ => {}
     }
     let mut buf = [0u16; 16];
@@ -427,8 +433,11 @@ fn make_icon(label: &str, bg: u32, fg: u32, auto_bar: bool) -> HICON {
         }
 
         let face = wide("Segoe UI");
-        let height = if label.chars().count() > 2 { size * 9 / 16 } else { size * 11 / 16 };
-        let font = CreateFontW(-height, 0, 0, 0, FW_BOLD as i32, 0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32, ANTIALIASED_QUALITY as u32, 0, face.as_ptr());
+        // Три буквы (УКР, РУС, АНГ) — узким шрифтом, чтобы поместились в маленькую иконку.
+        let three = label.chars().count() > 2;
+        let height = if three { size * 9 / 16 } else { size * 11 / 16 };
+        let width = if three { size / 4 } else { 0 };
+        let font = CreateFontW(-height, width, 0, 0, FW_BOLD as i32, 0, 0, 0, DEFAULT_CHARSET as u32, OUT_DEFAULT_PRECIS as u32, CLIP_DEFAULT_PRECIS as u32, ANTIALIASED_QUALITY as u32, 0, face.as_ptr());
         let old_font = SelectObject(dc, font);
         SetBkMode(dc, TRANSPARENT as _);
         SetTextColor(dc, fg);
@@ -471,9 +480,9 @@ fn icon_for(hkl: isize, enabled: bool, auto_on: bool) -> HICON {
         (rgb(150, 150, 150), rgb(240, 240, 240))
     } else {
         match label.as_str() {
-            "EN" => (rgb(32, 96, 160), rgb(255, 255, 255)),
-            "UA" => (rgb(0, 87, 183), rgb(255, 213, 0)),
-            "RU" => (rgb(170, 40, 40), rgb(255, 255, 255)),
+            "АНГ" => (rgb(32, 96, 160), rgb(255, 255, 255)),
+            "УКР" => (rgb(0, 87, 183), rgb(255, 213, 0)),
+            "РУС" => (rgb(170, 40, 40), rgb(255, 255, 255)),
             _ => (rgb(70, 70, 70), rgb(255, 255, 255)),
         }
     };
@@ -593,20 +602,12 @@ fn show_menu() {
         add(auto_menu, ID_AUTO_OFF, "Выключено", mode == AUTO_OFF);
         add(auto_menu, ID_AUTO_ALL, "Между всеми языками (англ. ↔ укр. ↔ рус.)", mode == AUTO_ALL);
         AppendMenuW(auto_menu, MF_SEPARATOR, 0, null());
-        let mut langs: Vec<u16> = Vec::new();
-        for h in sys::installed_layouts() {
-            let p = primary_lang(h);
-            if auto::Lang::from_primary(p).is_some() && !langs.contains(&p) {
-                langs.push(p);
-            }
-        }
-        for p in langs {
-            let name = match p {
-                0x22 => "Всё на украинский",
-                0x19 => "Всё на русский",
-                _ => "Всё на английский",
-            };
-            add(auto_menu, ID_AUTO_TARGET + p as usize, name, mode == 0x100 | p as u32);
+        // Все три языка доступны всегда: если раскладка не установлена, слово просто
+        // перепечатывается нужными буквами (без переключения раскладки).
+        let installed: Vec<u16> = sys::installed_layouts().into_iter().map(primary_lang).collect();
+        for (p, name) in [(0x22u16, "Всё на украинский"), (0x19, "Всё на русский"), (0x09, "Всё на английский")] {
+            let text = if installed.contains(&p) { name.to_string() } else { format!("{name} (раскладка не установлена)") };
+            add(auto_menu, ID_AUTO_TARGET + p as usize, &text, mode == 0x100 | p as u32);
         }
 
         let (id, text, flags) = &items[0];
@@ -726,7 +727,7 @@ pub fn run() {
         let mutex_name = wide("Local\\Rozkladka-single-instance");
         let _mutex = CreateMutexW(null(), 0, mutex_name.as_ptr());
         if GetLastError() == ERROR_ALREADY_EXISTS {
-            sys::message_box("Rozkladka уже запущена — иконка в трее (возле часов).", APP_TITLE, MB_OK | MB_ICONINFORMATION);
+            sys::message_box("Раскладка уже запущена — иконка в трее (возле часов).", APP_TITLE, MB_OK | MB_ICONINFORMATION);
             return;
         }
 
@@ -788,7 +789,7 @@ pub fn run() {
 
         if first_run {
             balloon(
-                "Rozkladka запущена",
+                "Раскладка запущена",
                 "Слова в неправильной раскладке исправляются сами после пробела.\nPause — исправить/отменить. Правый клик по иконке — настройки и целевой язык.",
             );
         }
